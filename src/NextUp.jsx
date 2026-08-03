@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
-import { Plus, X, Check, Pencil, Trash2 } from "lucide-react";
+import { Plus, X, Check, Pencil, Trash2, GripVertical, Link2, Printer } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 // Every browser/device shares this single row in the "nextup_state" table.
@@ -9,7 +9,7 @@ const RAW_SESSIONS = [{"name": "First Session", "songs": [{"id": 0, "title": "Ob
 
 // give every seed song an (empty) categories array to tag it into setlists,
 // and default the language to Sinhala since that's what the whole sheet is
-RAW_SESSIONS.forEach((s) => s.songs.forEach((song) => { song.categories = []; song.language = "Sinhala"; song.singer = ""; }));
+RAW_SESSIONS.forEach((s) => s.songs.forEach((song) => { song.categories = []; song.language = "Sinhala"; song.singer = ""; song.link = ""; song.practicedAt = null; song.duration = null; }));
 let NEXT_ID = Math.max(...RAW_SESSIONS.flatMap((s) => s.songs.map((sg) => sg.id))) + 1;
 
 const CATEGORIES = ["Wedding", "Restaurant"];
@@ -43,6 +43,33 @@ function nextStatus(s) {
   return STATUS_ORDER[(i + 1) % STATUS_ORDER.length];
 }
 
+function timeAgo(ts) {
+  if (!ts) return null;
+  const diff = Date.now() - ts;
+  const days = Math.floor(diff / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks} week${weeks > 1 ? "s" : ""} ago`;
+  const months = Math.floor(days / 30);
+  return `${months} month${months > 1 ? "s" : ""} ago`;
+}
+
+function parseDuration(str) {
+  if (!str) return null;
+  const parts = String(str).split(":").map(Number);
+  if (parts.some(isNaN)) return null;
+  const [m, s] = parts;
+  return m * 60 + (s || 0);
+}
+
+function formatDuration(total) {
+  if (!total) return "0:00";
+  const m = Math.floor(total / 60), s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function flatten(sessions) {
   const out = [];
   sessions.forEach((s, si) =>
@@ -68,8 +95,10 @@ export default function NextUp() {
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
-  const [form, setForm] = useState({ title: "", artist: "", singer: "", key: "", session: RAW_SESSIONS[0].name, remark: "", language: "Sinhala", categories: [] });
+  const [form, setForm] = useState({ title: "", artist: "", singer: "", key: "", session: RAW_SESSIONS[0].name, remark: "", language: "Sinhala", categories: [], link: "", duration: "" });
+  const [gigMode, setGigMode] = useState(false);
   const heroRef = useRef(null);
+  const dragIdRef = useRef(null);
 
   const allSongs = useMemo(() => flatten(sessions), [sessions]);
 
@@ -135,9 +164,33 @@ export default function NextUp() {
     setSessions((prev) =>
       prev.map((s) => ({
         ...s,
-        songs: s.songs.map((song) => (song.id === id ? { ...song, status } : song)),
+        songs: s.songs.map((song) =>
+          song.id === id
+            ? { ...song, status, practicedAt: status === "Practiced" ? Date.now() : song.practicedAt }
+            : song
+        ),
       }))
     );
+  }
+
+  function moveSong(draggedId, targetId) {
+    if (draggedId === targetId) return;
+    setSessions((prev) => {
+      let dragged = null, targetSession = null;
+      prev.forEach((s) => s.songs.forEach((sg) => {
+        if (sg.id === draggedId) dragged = sg;
+        if (sg.id === targetId) targetSession = s.name;
+      }));
+      if (!dragged || !targetSession) return prev;
+      return prev.map((s) => {
+        let songs = s.songs.filter((sg) => sg.id !== draggedId);
+        if (s.name === targetSession) {
+          const at = songs.findIndex((sg) => sg.id === targetId);
+          songs = [...songs.slice(0, at), dragged, ...songs.slice(at)];
+        }
+        return { ...s, songs };
+      });
+    });
   }
 
   function advance(id, current) {
@@ -221,11 +274,14 @@ export default function NextUp() {
       remark: form.remark.trim() || null,
       language: form.language,
       categories: form.categories,
+      link: form.link.trim() || "",
+      practicedAt: null,
+      duration: parseDuration(form.duration),
     };
     setSessions((prev) =>
       prev.map((s) => (s.name === form.session ? { ...s, songs: [...s.songs, newSong] } : s))
     );
-    setForm({ title: "", artist: "", singer: "", key: "", session: form.session, remark: "", language: "Sinhala", categories: [] });
+    setForm({ title: "", artist: "", singer: "", key: "", session: form.session, remark: "", language: "Sinhala", categories: [], link: "", duration: "" });
     setShowAdd(false);
   }
  function openEdit(song) {
@@ -239,6 +295,8 @@ export default function NextUp() {
       remark: song.remark || "",
       language: song.language,
       categories: [...(song.categories || [])],
+      link: song.link || "",
+      duration: song.duration ? formatDuration(song.duration) : "",
     });
   }
 
@@ -270,6 +328,8 @@ export default function NextUp() {
         remark: editForm.remark.trim() || null,
         language: editForm.language,
         categories: editForm.categories,
+        link: editForm.link.trim() || "",
+        duration: parseDuration(editForm.duration),
       };
       return prev.map((s) => {
         const withoutSong = s.songs.filter((sg) => sg.id !== editingId);
@@ -365,6 +425,29 @@ export default function NextUp() {
       });
     }
   }, [nextSong && nextSong.id]);
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      const tag = document.activeElement && document.activeElement.tagName;
+      const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+      if (typing || showAdd || editingId != null || gigMode) return;
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (nextSong) advance(nextSong.id, nextSong.status);
+      } else if (e.code === "ArrowDown" || e.code === "ArrowUp") {
+        e.preventDefault();
+        if (!nextSong) return;
+        const pool = activeSession === "all" ? allSongs : allSongs.filter((s) => s.session === activeSession);
+        const idx = pool.findIndex((s) => s.id === nextSong.id);
+        const dir = e.code === "ArrowDown" ? 1 : -1;
+        const target = pool[idx + dir];
+        if (target) pickAsNext(target.id);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [nextSong, allSongs, activeSession, showAdd, editingId, gigMode]);
 
   return (
     <div className="stage">
@@ -990,6 +1073,94 @@ html, body {
   .ticket-status { padding: 4px 6px; font-size: 9px; }
   .ticket-title { font-size: 14px; }
 }
+
+        /* Lyrics/chords link + last-practiced date */
+        .lyrics-link {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          margin-top: 8px;
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--amber);
+          text-decoration: none;
+        }
+        .lyrics-link:hover { text-decoration: underline; }
+        .last-practiced {
+          margin-top: 6px;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px;
+          color: var(--ink-faint);
+        }
+        .ticket-link-icon {
+          display: inline-flex;
+          margin-left: 6px;
+          color: var(--amber);
+          vertical-align: middle;
+        }
+        .ticket-link-icon:hover { color: var(--ink); }
+
+        /* Drag-to-reorder handle */
+        .drag-handle {
+          color: var(--ink-faint);
+          cursor: grab;
+          flex-shrink: 0;
+          display: flex;
+        }
+        .drag-handle:active { cursor: grabbing; }
+        .ticket[draggable="true"]:hover { border-color: var(--ink-faint); }
+
+        /* Gig mode */
+        .gig-overlay {
+          position: fixed;
+          inset: 0;
+          background: var(--bg);
+          z-index: 60;
+          overflow-y: auto;
+          padding: 24px;
+        }
+        .gig-head {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 10px;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 12px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--ink-dim);
+        }
+        .gig-head > div:last-child { display: flex; gap: 8px; }
+        .gig-head .btn-add { display: flex; align-items: center; gap: 6px; }
+        .gig-runtime {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 13px;
+          color: var(--amber);
+          margin-bottom: 18px;
+        }
+        .gig-row {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          padding: 16px 4px;
+          border-bottom: 1px solid var(--card-line);
+        }
+        .gig-num {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 24px;
+          color: var(--ink-faint);
+          width: 34px;
+          flex-shrink: 0;
+        }
+        .gig-title { font-size: 18px; font-weight: 600; }
+        .gig-sub { font-size: 13px; color: var(--ink-dim); margin-top: 2px; }
+
+        @media print {
+          body * { visibility: hidden; }
+          .gig-overlay, .gig-overlay * { visibility: visible; }
+          .gig-overlay { position: absolute; inset: 0; padding: 0; }
+          .no-print { display: none; }
+        }
       `}</style>
 
       <div className="wrap">
@@ -1046,6 +1217,14 @@ html, body {
                 <span className="sesstag">{nextSong.session}</span>
               </div>
               {nextSong.remark && <div className="remark">{nextSong.remark}</div>}
+              {nextSong.status === "Practiced" && nextSong.practicedAt && (
+                <div className="last-practiced">Last practiced {timeAgo(nextSong.practicedAt)}</div>
+              )}
+              {nextSong.link && (
+                <a className="lyrics-link" href={nextSong.link} target="_blank" rel="noreferrer">
+                  <Link2 size={13} strokeWidth={2.2} /> Lyrics / Chords
+                </a>
+              )}
               <div className="hero-actions">
                 <button
                   className={"btn-primary" + (pulse ? " pulse" : "")}
@@ -1092,6 +1271,11 @@ html, body {
               {c === "all" ? "All" : c}
             </div>
           ))}
+          {categoryFilter !== "all" && (
+            <button className="btn-add" style={{ marginLeft: "auto" }} onClick={() => setGigMode(true)}>
+              🎤 Gig Mode
+            </button>
+          )}
         </div>
 
         <div className="cat-filters">
@@ -1149,7 +1333,21 @@ html, body {
             const st = STATUS_STYLE[song.status];
             const isChecked = selected.has(song.id);
             return (
-              <div className={"ticket" + (isChecked ? " checked" : "")} key={song.id}>
+              <div
+                className={"ticket" + (isChecked ? " checked" : "")}
+                key={song.id}
+                draggable
+                onDragStart={() => (dragIdRef.current = song.id)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragIdRef.current) moveSong(dragIdRef.current, song.id);
+                  dragIdRef.current = null;
+                }}
+              >
+                <span className="drag-handle" title="Drag to reorder">
+                  <GripVertical size={14} />
+                </span>
                 <span
                   className={"checkbox" + (isChecked ? " on" : "")}
                   onClick={() => toggleSelect(song.id)}
@@ -1160,9 +1358,24 @@ html, body {
                 <span className="ticket-order">{String(idx + 1).padStart(2, "0")}</span>
                 <span className="ticket-status-dot" style={{ background: st.dot }} />
                 <div className="ticket-body" onClick={() => pickAsNext(song.id)} title="Click to practice this next">
-                  <div className="ticket-title">{song.title}</div>
+                  <div className="ticket-title">
+                    {song.title}
+                    {song.link && (
+                      <a
+                        href={song.link}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="ticket-link-icon"
+                        onClick={(e) => e.stopPropagation()}
+                        title="Lyrics / Chords"
+                      >
+                        <Link2 size={12} strokeWidth={2.2} />
+                      </a>
+                    )}
+                  </div>
                   <div className="ticket-sub">
                     {song.artist} {activeSession === "all" ? "· " + song.session : ""}
+                    {song.status === "Practiced" && song.practicedAt && ` · practiced ${timeAgo(song.practicedAt)}`}
                   </div>
                   {song.categories && song.categories.length > 0 && (
                     <div className="ticket-tags">
@@ -1295,6 +1508,20 @@ html, body {
               onChange={(e) => setForm((f) => ({ ...f, remark: e.target.value }))}
               placeholder="e.g. Capo on 2nd fret, transpose after chorus…"
             />
+            <label className="field-label">Lyrics / Chords Link (optional)</label>
+            <input
+              className="field"
+              value={form.link}
+              onChange={(e) => setForm((f) => ({ ...f, link: e.target.value }))}
+              placeholder="https://…"
+            />
+            <label className="field-label">Duration (optional)</label>
+            <input
+              className="field"
+              value={form.duration}
+              onChange={(e) => setForm((f) => ({ ...f, duration: e.target.value }))}
+              placeholder="mm:ss, e.g. 3:45"
+            />
             <label className="field-label">Setlist (optional)</label>
             <div className="field-cats">
               {CATEGORIES.map((c) => (
@@ -1394,6 +1621,20 @@ html, body {
               onChange={(e) => setEditForm((f) => ({ ...f, remark: e.target.value }))}
               placeholder="e.g. Capo on 2nd fret, transpose after chorus…"
             />
+            <label className="field-label">Lyrics / Chords Link (optional)</label>
+            <input
+              className="field"
+              value={editForm.link}
+              onChange={(e) => setEditForm((f) => ({ ...f, link: e.target.value }))}
+              placeholder="https://…"
+            />
+            <label className="field-label">Duration (optional)</label>
+            <input
+              className="field"
+              value={editForm.duration}
+              onChange={(e) => setEditForm((f) => ({ ...f, duration: e.target.value }))}
+              placeholder="mm:ss, e.g. 3:45"
+            />
             <label className="field-label">Setlist (optional)</label>
             <div className="field-cats">
               {CATEGORIES.map((c) => (
@@ -1420,6 +1661,37 @@ html, body {
               <button type="submit" className="btn-primary">Save Changes</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {gigMode && (
+        <div className="gig-overlay">
+          <div className="gig-head no-print">
+            <div>{categoryFilter} Setlist · {filteredSongs.length} songs</div>
+            <div>
+              <button className="btn-add" onClick={() => window.print()}>
+                <Printer size={14} /> Print
+              </button>
+              <button className="btn-add" onClick={() => setGigMode(false)}>Exit</button>
+            </div>
+          </div>
+          <div className="gig-runtime">
+            Total runtime: {formatDuration(filteredSongs.reduce((sum, s) => sum + (s.duration || 0), 0))}
+          </div>
+          <div className="gig-list">
+            {filteredSongs.map((s, i) => (
+              <div className="gig-row" key={s.id}>
+                <span className="gig-num">{i + 1}</span>
+                <div>
+                  <div className="gig-title">{s.title}</div>
+                  <div className="gig-sub">
+                    {s.artist} · Key {s.key}
+                    {s.duration ? ` · ${formatDuration(s.duration)}` : ""}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
