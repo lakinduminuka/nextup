@@ -125,8 +125,11 @@ export default function NextUp() {
   }
 
   function pickAsNext(id) {
-    setManualId(id);
+  setManualId(id);
+  if (heroRef.current) {
+    heroRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+}
 
   function toggleSelect(id) {
     setSelected((prev) => {
@@ -922,11 +925,17 @@ export default function NextUp() {
           margin-top: 18px;
         }
 
-        @media (max-width: 480px) {
-          .ticket-sub { display: none; }
-          .hero { padding: 30px 18px 24px; }
-          .topbar { align-items: center; }
-        }
+        @media (max-width: 600px) {
+  .ticket-sub { display: none; }
+  .hero { padding: 30px 18px 24px; }
+  .topbar { align-items: center; }
+  .ticket { gap: 8px; padding: 12px 10px; }
+  .ticket-order { display: none; }
+  .ticket-key { display: none; }
+  .langtag.small { display: none; }
+  .ticket-status { padding: 4px 6px; font-size: 9px; }
+  .ticket-title { font-size: 14px; }
+}
       `}</style>
 
       <div className="wrap">
