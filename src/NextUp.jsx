@@ -32,6 +32,12 @@ const STATUS_STYLE = {
   "Practiced": { label: "Practiced", color: "var(--green)", dot: "var(--green)" },
 };
 
+const STATUS_FILTER_STYLE = {
+  "Need to Practice": { bg: "rgba(232,96,76,0.14)", border: "rgba(232,96,76,0.4)", text: "#e8604c" },
+  "Practiced Once": { bg: "rgba(242,169,76,0.14)", border: "rgba(242,169,76,0.4)", text: "#f2a94c" },
+  "Practiced": { bg: "rgba(95,184,156,0.14)", border: "rgba(95,184,156,0.4)", text: "#5fb89c" },
+};
+
 function nextStatus(s) {
   const i = STATUS_ORDER.indexOf(s);
   return STATUS_ORDER[(i + 1) % STATUS_ORDER.length];
@@ -54,6 +60,7 @@ export default function NextUp() {
   const [activeSession, setActiveSession] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [languageFilter, setLanguageFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [pulse, setPulse] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
@@ -75,6 +82,9 @@ export default function NextUp() {
     if (languageFilter !== "all") {
       list = list.filter((s) => s.language === languageFilter);
     }
+    if (statusFilter !== "all") {
+      list = list.filter((s) => s.status === statusFilter);
+    }
     if (query.trim()) {
       const q = query.toLowerCase();
       list = list.filter(
@@ -82,17 +92,29 @@ export default function NextUp() {
       );
     }
     return list;
-  }, [allSongs, activeSession, categoryFilter, languageFilter, query]);
+  }, [allSongs, activeSession, categoryFilter, languageFilter, statusFilter, query]);
+
+  // Auto-pick (or re-validate) which song is "next" — but only when the
+  // current pick becomes invalid (deleted, or no longer in the active
+  // session/filter). Re-running this on every status change was what made
+  // the hero card jump to a different song right after marking one
+  // "Practiced Once" — this keeps it pinned to the song you're looking at.
+  useEffect(() => {
+    const pool = activeSession === "all" ? allSongs : allSongs.filter((s) => s.session === activeSession);
+    const stillValid = manualId != null && pool.some((s) => s.id === manualId);
+    if (!stillValid) {
+      const pick =
+        pool.find((s) => s.status === "Need to Practice") ||
+        pool.find((s) => s.status === "Practiced Once") ||
+        pool[0] ||
+        null;
+      setManualId(pick ? pick.id : null);
+    }
+  }, [allSongs, activeSession]);
 
   const nextSong = useMemo(() => {
     const pool = activeSession === "all" ? allSongs : allSongs.filter((s) => s.session === activeSession);
-    if (manualId != null) {
-      const picked = pool.find((s) => s.id === manualId);
-      if (picked) return picked;
-    }
-    return pool.find((s) => s.status === "Need to Practice") ||
-           pool.find((s) => s.status === "Practiced Once") ||
-           pool[0] || null;
+    return pool.find((s) => s.id === manualId) || null;
   }, [allSongs, activeSession, manualId]);
 
   const queue = useMemo(() => {
@@ -266,6 +288,13 @@ export default function NextUp() {
     closeEdit();
   }
 
+  // Keep a ref of the latest sessions so the realtime handler below (set up
+  // once on mount) can always compare against current state, not stale state.
+  const sessionsRef = useRef(sessions);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
   // Load the shared song list from Supabase once when the app first opens.
   useEffect(() => {
     let active = true;
@@ -298,7 +327,7 @@ export default function NextUp() {
       supabase.from("nextup_state").upsert({ id: STATE_ROW_ID, data: sessions }).then(({ error }) => {
         if (error) setSyncError("Couldn't save your last change to the shared database.");
       });
-    }, 500);
+    }, 350);
     return () => clearTimeout(timeout);
   }, [sessions, loaded]);
 
@@ -310,7 +339,13 @@ export default function NextUp() {
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "nextup_state", filter: `id=eq.${STATE_ROW_ID}` },
         (payload) => {
-          if (payload.new && payload.new.data) setSessions(payload.new.data);
+          if (!payload.new || !payload.new.data) return;
+          // Skip echoes of a change this same tab just saved — applying them
+          // again is what caused status clicks to glitch/revert.
+          const incoming = JSON.stringify(payload.new.data);
+          const current = JSON.stringify(sessionsRef.current);
+          if (incoming === current) return;
+          setSessions(payload.new.data);
         }
       )
       .subscribe();
@@ -1053,6 +1088,24 @@ export default function NextUp() {
               onClick={() => setLanguageFilter(l)}
             >
               {l === "all" ? "All" : l}
+            </div>
+          ))}
+        </div>
+
+        <div className="cat-filters">
+          <span className="cat-filter-label">Status</span>
+          {["all", ...STATUS_ORDER].map((s) => (
+            <div
+              key={s}
+              className={"cat-chip" + (statusFilter === s ? " active" : "")}
+              style={
+                statusFilter === s && s !== "all"
+                  ? { background: STATUS_FILTER_STYLE[s].bg, borderColor: STATUS_FILTER_STYLE[s].border, color: STATUS_FILTER_STYLE[s].text }
+                  : undefined
+              }
+              onClick={() => setStatusFilter(s)}
+            >
+              {s === "all" ? "All" : STATUS_STYLE[s].label}
             </div>
           ))}
         </div>
