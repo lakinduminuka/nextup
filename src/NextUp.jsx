@@ -383,6 +383,16 @@ export default function NextUp() {
           --ink-faint: #6b6178;
         }
 
+        * { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+}
+#root {
+  min-height: 100vh;
+}
+
         .stage {
           background:
             radial-gradient(ellipse 900px 500px at 50% -10%, rgba(242,169,76,0.10), transparent 60%),
