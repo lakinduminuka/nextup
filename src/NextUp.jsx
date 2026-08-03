@@ -9,7 +9,7 @@ const RAW_SESSIONS = [{"name": "First Session", "songs": [{"id": 0, "title": "Ob
 
 // give every seed song an (empty) categories array to tag it into setlists,
 // and default the language to Sinhala since that's what the whole sheet is
-RAW_SESSIONS.forEach((s) => s.songs.forEach((song) => { song.categories = []; song.language = "Sinhala"; }));
+RAW_SESSIONS.forEach((s) => s.songs.forEach((song) => { song.categories = []; song.language = "Sinhala"; song.singer = ""; }));
 let NEXT_ID = Math.max(...RAW_SESSIONS.flatMap((s) => s.songs.map((sg) => sg.id))) + 1;
 
 const CATEGORIES = ["Wedding", "Restaurant"];
@@ -68,7 +68,7 @@ export default function NextUp() {
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
-  const [form, setForm] = useState({ title: "", artist: "", key: "", session: RAW_SESSIONS[0].name, remark: "", language: "Sinhala", categories: [] });
+  const [form, setForm] = useState({ title: "", artist: "", singer: "", key: "", session: RAW_SESSIONS[0].name, remark: "", language: "Sinhala", categories: [] });
   const heroRef = useRef(null);
 
   const allSongs = useMemo(() => flatten(sessions), [sessions]);
@@ -215,6 +215,7 @@ export default function NextUp() {
       id: NEXT_ID++,
       title: form.title.trim(),
       artist: form.artist.trim() || "Unknown",
+      singer: form.singer.trim() || "",
       key: form.key.trim() || "—",
       status: "Need to Practice",
       remark: form.remark.trim() || null,
@@ -224,15 +225,15 @@ export default function NextUp() {
     setSessions((prev) =>
       prev.map((s) => (s.name === form.session ? { ...s, songs: [...s.songs, newSong] } : s))
     );
-    setForm({ title: "", artist: "", key: "", session: form.session, remark: "", language: "Sinhala", categories: [] });
+    setForm({ title: "", artist: "", singer: "", key: "", session: form.session, remark: "", language: "Sinhala", categories: [] });
     setShowAdd(false);
   }
-
-  function openEdit(song) {
+ function openEdit(song) {
     setEditingId(song.id);
     setEditForm({
       title: song.title,
       artist: song.artist,
+      singer: song.singer || "",
       key: song.key,
       session: song.session,
       remark: song.remark || "",
@@ -264,6 +265,7 @@ export default function NextUp() {
         ...original,
         title: editForm.title.trim(),
         artist: editForm.artist.trim() || "Unknown",
+        singer: editForm.singer.trim() || "",
         key: editForm.key.trim() || "—",
         remark: editForm.remark.trim() || null,
         language: editForm.language,
@@ -516,12 +518,19 @@ html, body {
           margin: 0 0 8px;
         }
         .hero-artist {
-          position: relative;
-          font-size: 16px;
-          color: var(--ink-dim);
-          margin-bottom: 20px;
-        }
-        .hero-meta {
+  position: relative;
+  font-size: 16px;
+  color: var(--ink-dim);
+  margin-bottom: 4px;
+}
+.hero-singer {
+  position: relative;
+  font-size: 13px;
+  color: var(--ink-faint);
+  font-style: italic;
+  margin-bottom: 16px;
+}
+.hero-meta {
           position: relative;
           display: flex;
           align-items: center;
@@ -986,7 +995,7 @@ html, body {
       <div className="wrap">
         <div className="topbar">
           <div>
-            <div className="brand">NEXT<span>UP</span></div>
+            <div className="brand">LUMOS<span>Practices</span></div>
             <div className="brand-sub">
               Practice Queue · {sessions.length} Sessions
               {!loaded && " · Syncing…"}
@@ -1023,6 +1032,7 @@ html, body {
               <div className="eyebrow"><span className="rec-dot" />Now Practicing</div>
               <h1 className="hero-title">{nextSong.title}</h1>
               <div className="hero-artist">{nextSong.artist}</div>
+              {nextSong.singer && <div className="hero-singer">Sung by {nextSong.singer}</div>}
               <div className="hero-meta">
                 <span className="keytag">Key · {nextSong.key}</span>
                 <span
@@ -1233,6 +1243,13 @@ html, body {
               onChange={(e) => setForm((f) => ({ ...f, artist: e.target.value }))}
               placeholder="Artist"
             />
+            <label className="field-label">Singer (who's singing it)</label>
+            <input
+              className="field"
+              value={form.singer}
+              onChange={(e) => setForm((f) => ({ ...f, singer: e.target.value }))}
+              placeholder="e.g. Kasun"
+            />
             <div className="field-row">
               <div style={{ flex: 1 }}>
                 <label className="field-label">Key</label>
@@ -1324,6 +1341,13 @@ html, body {
               value={editForm.artist}
               onChange={(e) => setEditForm((f) => ({ ...f, artist: e.target.value }))}
               placeholder="Artist"
+            />
+            <label className="field-label">Singer (who's singing it)</label>
+            <input
+              className="field"
+              value={editForm.singer}
+              onChange={(e) => setEditForm((f) => ({ ...f, singer: e.target.value }))}
+              placeholder="e.g. Kasun"
             />
             <div className="field-row">
               <div style={{ flex: 1 }}>
