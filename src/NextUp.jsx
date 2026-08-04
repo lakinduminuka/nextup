@@ -1315,17 +1315,114 @@ html, body {
           font-size: 13px;
         }
 
-        @media (max-width: 600px) {
-  .ticket-sub { display: none; }
-  .hero { padding: 30px 18px 24px; }
-  .topbar { align-items: center; }
-  .ticket { gap: 8px; padding: 12px 10px; }
-  .ticket-order { display: none; }
-  .ticket-key { display: none; }
-  .langtag.small { display: none; }
-  .ticket-status { padding: 4px 6px; font-size: 9px; }
-  .ticket-title { font-size: 14px; }
-}
+        /* ---------- Mobile responsiveness & touch usability ---------- */
+        button, .tab, .cat-chip, .view-tab, .checkbox, .ticket-status,
+        .edit-btn, .langtag, .btn-add, .btn-primary, .btn-ghost, .btn-danger {
+          touch-action: manipulation;
+          -webkit-tap-highlight-color: transparent;
+        }
+
+        @media (max-width: 640px) {
+          .stage { padding: 16px 12px 96px; }
+          .wrap { max-width: 100%; }
+
+          /* Header stacks and action buttons become equal-width tap targets */
+          .topbar { flex-direction: column; align-items: stretch; gap: 12px; }
+          .topbar-actions { width: 100%; }
+          .topbar-actions .btn-add { flex: 1; justify-content: center; min-height: 44px; }
+
+          /* Queue/Calendar switcher fills the width */
+          .view-tabs { width: 100%; }
+          .view-tab { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 40px; }
+
+          /* Session tabs & filter chips scroll horizontally instead of wrapping into a wall of chips */
+          .tabs, .cat-filters {
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+            padding-bottom: 2px;
+            margin-left: -12px;
+            margin-right: -12px;
+            padding-left: 12px;
+            padding-right: 12px;
+          }
+          .tabs::-webkit-scrollbar, .cat-filters::-webkit-scrollbar { display: none; }
+          .tab, .cat-chip { flex-shrink: 0; min-height: 36px; display: flex; align-items: center; }
+          .cat-filter-label { flex-shrink: 0; }
+          .cat-filters button.btn-add { flex-shrink: 0; margin-left: 8px !important; }
+
+          /* Hero card */
+          .hero { padding: 26px 16px 20px; border-radius: 14px; margin-bottom: 20px; }
+          .hero-title { font-size: clamp(30px, 10vw, 42px); }
+          .hero-meta { gap: 8px; margin-bottom: 18px; }
+          .hero-actions { flex-direction: column; align-items: stretch; gap: 10px; }
+          .hero-actions .btn-primary { width: 100%; min-height: 48px; }
+          .hero-actions .ticket-status { align-self: center; }
+
+          /* Search + stats */
+          .controls { flex-wrap: wrap; }
+          .search { font-size: 16px; min-height: 44px; }
+          .stats { flex-wrap: wrap; gap: 10px; }
+
+          /* Queue rows: bigger tap targets, trim non-essential columns */
+          .ticket { gap: 10px; padding: 12px 10px; }
+          .ticket-title { font-size: 14px; }
+          .ticket-sub { font-size: 11px; }
+          .ticket-order { display: none; }
+          .ticket-key { display: none; }
+          .langtag.small { display: none; }
+          .ticket-status { padding: 5px 8px; font-size: 9px; }
+          .drag-handle { display: none; } /* drag-and-drop isn't touch-friendly; hide on mobile */
+          .checkbox { width: 22px; height: 22px; }
+          .edit-btn { width: 32px; height: 32px; }
+
+          /* Forms: 16px inputs stop iOS Safari from auto-zooming on focus */
+          .field, select.field, textarea.field { font-size: 16px; min-height: 40px; }
+          .field-row { flex-direction: column; gap: 0; }
+
+          /* Modals become a bottom sheet: easier one-thumb reach than a centered popup */
+          .modal-backdrop { align-items: flex-end; padding: 0; }
+          .modal {
+            width: 100%;
+            max-width: 100%;
+            max-height: 88vh;
+            border-radius: 18px 18px 0 0;
+            padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+          }
+
+          /* Bulk action bar docks to the bottom edge instead of floating (avoids thumb-reach + overlap issues) */
+          .bulk-bar {
+            left: 0;
+            right: 0;
+            bottom: 0;
+            transform: none;
+            width: 100%;
+            max-width: 100%;
+            border-radius: 16px 16px 0 0;
+            padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+            justify-content: flex-start;
+          }
+          .bulk-actions { width: 100%; }
+          .bulk-btn { min-height: 38px; }
+
+          /* Gig mode */
+          .gig-overlay { padding: 16px; }
+          .gig-head { flex-direction: column; align-items: flex-start; gap: 10px; }
+          .gig-head > div:last-child { width: 100%; }
+          .gig-head .btn-add { flex: 1; justify-content: center; }
+          .gig-title { font-size: 16px; }
+
+          /* Calendar events */
+          .event-row { padding: 12px 10px; gap: 10px; }
+          .event-date { width: 38px; }
+          .event-day { font-size: 20px; }
+        }
+
+        @media (max-width: 380px) {
+          .hero-title { font-size: clamp(26px, 11vw, 36px); }
+          .brand { font-size: 22px; }
+        }
 
         /* Lyrics/chords link + last-practiced date */
         .lyrics-link {
