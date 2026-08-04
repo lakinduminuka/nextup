@@ -128,6 +128,7 @@ export default function NextUp() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [languageFilter, setLanguageFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [todayFilter, setTodayFilter] = useState(false);
   const [query, setQuery] = useState("");
   const [pulse, setPulse] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
@@ -136,13 +137,14 @@ export default function NextUp() {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   const [form, setForm] = useState({ title: "", artist: "", singer: "", key: "", session: RAW_SESSIONS[0].name, remark: "", language: "Sinhala", categories: [], link: "", duration: "", practicingToday: false, youtubeLink: "" });
+  const [confirmDupeAdd, setConfirmDupeAdd] = useState(false);
   const [playingId, setPlayingId] = useState(null);
   const [gigMode, setGigMode] = useState(false);
   const [view, setView] = useState("queue");
   const [events, setEvents] = useState([]);
   const [eventsLoaded, setEventsLoaded] = useState(false);
   const [showAddEvent, setShowAddEvent] = useState(false);
-  const [eventForm, setEventForm] = useState({ date: "", type: "Practice", title: "", location: "", songIds: [] });
+  const [eventForm, setEventForm] = useState({ date: "", type: "Practice", title: "", location: "", note: "", songIds: [] });
   const [eventSongSearch, setEventSongSearch] = useState("");
   const [editingEventId, setEditingEventId] = useState(null);
   const [editEventForm, setEditEventForm] = useState(null);
@@ -191,11 +193,44 @@ export default function NextUp() {
     });
   }, [events, calendarSearch, allSongs]);
 
+  // Every song attached to an event dated today (any type — Practice, Gig,
+  // etc). Backs both the "Today" badge on tickets and the Today filter chip.
+  const todaySongIds = useMemo(() => {
+    const ids = new Set();
+    events.forEach((ev) => {
+      if (ev.date === todayStr) ev.songIds.forEach((id) => ids.add(id));
+    });
+    return ids;
+  }, [events, todayStr]);
+
+  // Remarks/notes from today's events, for the banner shown when the Today
+  // filter is on.
+  const todayNotes = useMemo(() => {
+    return events
+      .filter((ev) => ev.date === todayStr && ev.note && ev.note.trim())
+      .map((ev) => ({ id: ev.id, title: ev.title, note: ev.note.trim() }));
+  }, [events, todayStr]);
+
   const eventSongOptions = useMemo(() => {
     const q = eventSongSearch.trim().toLowerCase();
     if (!q) return allSongs;
     return allSongs.filter((s) => s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q));
   }, [allSongs, eventSongSearch]);
+
+  // Songs that already exist with the same title (and artist, if given) as
+  // whatever's currently typed into the Add-Song form. Used to warn before
+  // creating a near-duplicate entry — this is what was letting the same
+  // song get added 2-3 times and show up repeated in search results.
+  const dupeMatches = useMemo(() => {
+    const title = form.title.trim().toLowerCase();
+    if (!title) return [];
+    const artist = form.artist.trim().toLowerCase();
+    return allSongs.filter((s) => {
+      if (s.title.trim().toLowerCase() !== title) return false;
+      if (!artist) return true;
+      return (s.artist || "").trim().toLowerCase() === artist;
+    });
+  }, [allSongs, form.title, form.artist]);
 
   const filteredSongs = useMemo(() => {
     let list = allSongs;
@@ -209,6 +244,9 @@ export default function NextUp() {
     if (statusFilter !== "all") {
       list = list.filter((s) => s.status === statusFilter);
     }
+    if (todayFilter) {
+      list = list.filter((s) => todaySongIds.has(s.id));
+    }
     if (query.trim()) {
       const q = query.toLowerCase();
       list = list.filter(
@@ -216,7 +254,7 @@ export default function NextUp() {
       );
     }
     return list;
-  }, [allSongs, activeSession, categoryFilter, languageFilter, statusFilter, query]);
+  }, [allSongs, activeSession, categoryFilter, languageFilter, statusFilter, todayFilter, todaySongIds, query]);
 
   // Auto-pick (or re-validate) which song is "next" — but only when the
   // current pick becomes invalid (deleted, or no longer in the active
@@ -294,7 +332,7 @@ export default function NextUp() {
   }
 
   function openAddEvent(presetSongIds) {
-    setEventForm({ date: "", type: "Practice", title: "", location: "", songIds: presetSongIds || [] });
+    setEventForm({ date: "", type: "Practice", title: "", location: "", note: "", songIds: presetSongIds || [] });
     setEventSongSearch("");
     setShowAddEvent(true);
   }
@@ -312,10 +350,11 @@ export default function NextUp() {
       type: eventForm.type,
       title: eventForm.title.trim() || (eventForm.type === "Gig" ? "Gig" : "Practice Session"),
       location: eventForm.location.trim(),
+      note: eventForm.note.trim(),
       songIds: eventForm.songIds,
     };
     setEvents((prev) => [...prev, newEvent]);
-    setEventForm({ date: "", type: "Practice", title: "", location: "", songIds: [] });
+    setEventForm({ date: "", type: "Practice", title: "", location: "", note: "", songIds: [] });
     setEventSongSearch("");
     setShowAddEvent(false);
   }
@@ -327,6 +366,7 @@ export default function NextUp() {
       type: ev.type,
       title: ev.title,
       location: ev.location || "",
+      note: ev.note || "",
       songIds: [...ev.songIds],
     });
     setEventSongSearch("");
@@ -357,6 +397,7 @@ export default function NextUp() {
               type: editEventForm.type,
               title: editEventForm.title.trim() || (editEventForm.type === "Gig" ? "Gig" : "Practice Session"),
               location: editEventForm.location.trim(),
+              note: editEventForm.note.trim(),
               songIds: editEventForm.songIds,
             }
           : ev
@@ -541,6 +582,12 @@ export default function NextUp() {
   function addSong(e) {
     e.preventDefault();
     if (!form.title.trim()) return;
+    if (dupeMatches.length > 0 && !confirmDupeAdd) {
+      // First submit with a matching song already in the list — hold off
+      // and ask the user to confirm rather than silently creating a dupe.
+      setConfirmDupeAdd(true);
+      return;
+    }
     const newSong = {
       id: NEXT_ID++,
       title: form.title.trim(),
@@ -561,6 +608,7 @@ export default function NextUp() {
     );
     if (form.practicingToday) addSongToTodayEvent(newSong.id);
     setForm({ title: "", artist: "", singer: "", key: "", session: form.session, remark: "", language: "Sinhala", categories: [], link: "", duration: "", practicingToday: false, youtubeLink: "" });
+    setConfirmDupeAdd(false);
     setShowAdd(false);
   }
  function openEdit(song) {
@@ -1843,6 +1891,67 @@ html, body {
           border: 1px solid rgba(240,180,41,0.4);
           margin-left: 6px;
         }
+        .today-toggle {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-shrink: 0;
+          font-family: 'Work Sans', sans-serif;
+          font-weight: 600;
+          font-size: 13px;
+          padding: 9px 14px;
+          border-radius: 10px;
+          border: 1px solid var(--card-line);
+          background: var(--card);
+          color: var(--ink);
+          cursor: pointer;
+          transition: border-color .15s ease, background .15s ease, color .15s ease;
+        }
+        .today-toggle:hover { border-color: var(--amber-dim); }
+        .today-toggle.active {
+          background: rgba(240,180,41,0.14);
+          color: #f0b429;
+          border-color: rgba(240,180,41,0.5);
+        }
+        .today-toggle .today-toggle-count {
+          font-size: 11px;
+          font-weight: 700;
+          padding: 1px 6px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.08);
+        }
+        .today-toggle.active .today-toggle-count {
+          background: rgba(240,180,41,0.22);
+        }
+        @media (max-width: 640px) {
+          .today-toggle { min-height: 44px; padding: 9px 12px; }
+        }
+        .today-note-bar {
+          display: flex;
+          align-items: flex-start;
+          gap: 10px;
+          margin-bottom: 16px;
+          padding: 12px 14px;
+          background: var(--card);
+          border: 1px solid var(--card-line);
+          border-left: 3px solid var(--amber);
+          border-radius: 12px;
+        }
+        .today-note-bar-body {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          font-family: 'Work Sans', sans-serif;
+          font-size: 13px;
+          line-height: 1.4;
+          color: var(--ink);
+        }
+        .today-note-bar-title {
+          font-weight: 700;
+          color: var(--amber);
+          margin-right: 6px;
+        }
 
         @media print {
           body * { visibility: hidden; }
@@ -1853,6 +1962,18 @@ html, body {
       `}</style>
 
       <div className="wrap">
+        {todayFilter && todayNotes.length > 0 && (
+          <div className="today-note-bar">
+            <div className="today-note-bar-body">
+              {todayNotes.map((n) => (
+                <div key={n.id} className="today-note-bar-item">
+                  {todayNotes.length > 1 && <span className="today-note-bar-title">{n.title}:</span>}
+                  {n.note}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="topbar">
           <div>
             <div className="brand">LUMOS<span>Practices</span></div>
@@ -1983,6 +2104,16 @@ html, body {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
+          <button
+            type="button"
+            className={"today-toggle" + (todayFilter ? " active" : "")}
+            onClick={() => setTodayFilter((v) => !v)}
+            title={todayFilter ? "Showing only today's practice songs" : "Show only songs scheduled for today"}
+          >
+            <CalendarPlus size={14} strokeWidth={2.4} />
+            Today
+            <span className="today-toggle-count">{todaySongIds.size}</span>
+          </button>
         </div>
 
         <div className="cat-filters">
@@ -2052,13 +2183,21 @@ html, body {
         <div className="bar"><div className="bar-fill" style={{ width: stats.pct + "%" }} /></div>
 
         <div className="section-label-row">
-          <div className="section-label">Up Next ({queue.length})</div>
+          <div className="section-label">{todayFilter ? "Today's Practice" : "Up Next"} ({queue.length})</div>
           {selected.size > 0 && (
             <div className="selected-count">{selected.size} selected</div>
           )}
         </div>
         <div className="queue">
-          {queue.length === 0 && <div className="empty">No more songs in this queue.</div>}
+          {queue.length === 0 && (
+            <div className="empty">
+              {todayFilter
+                ? (todaySongIds.size === 0
+                    ? "No songs scheduled for today yet. Add one from the calendar or tick \"Practicing today\" when adding/editing a song."
+                    : "No more songs in today's queue — nice work.")
+                : "No more songs in this queue."}
+            </div>
+          )}
           {queue.map((song, idx) => {
             const st = STATUS_STYLE[song.status];
             const isChecked = selected.has(song.id);
@@ -2274,27 +2413,48 @@ html, body {
       )}
 
       {showAdd && (
-        <div className="modal-backdrop" onClick={() => setShowAdd(false)}>
+        <div className="modal-backdrop" onClick={() => { setShowAdd(false); setConfirmDupeAdd(false); }}>
           <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={addSong}>
             <div className="modal-head">
               <span>Add a Song</span>
-              <span className="modal-close" onClick={() => setShowAdd(false)}><X size={16} /></span>
+              <span className="modal-close" onClick={() => { setShowAdd(false); setConfirmDupeAdd(false); }}><X size={16} /></span>
             </div>
             <label className="field-label">Title</label>
             <input
               className="field"
               autoFocus
               value={form.title}
-              onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+              onChange={(e) => { setForm((f) => ({ ...f, title: e.target.value })); setConfirmDupeAdd(false); }}
               placeholder="Song title"
             />
             <label className="field-label">Artist</label>
             <input
               className="field"
               value={form.artist}
-              onChange={(e) => setForm((f) => ({ ...f, artist: e.target.value }))}
+              onChange={(e) => { setForm((f) => ({ ...f, artist: e.target.value })); setConfirmDupeAdd(false); }}
               placeholder="Artist"
             />
+            {dupeMatches.length > 0 && (
+              <div
+                style={{
+                  marginTop: "-4px",
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "10px",
+                  border: "1px solid rgba(239,68,68,0.4)",
+                  background: "rgba(239,68,68,0.08)",
+                  fontSize: "13px",
+                  lineHeight: 1.4,
+                  color: "var(--ink, #e8e6e3)",
+                }}
+              >
+                Already in your list: {dupeMatches.slice(0, 3).map((s) => `${s.title} — ${s.artist}`).join(", ")}
+                {dupeMatches.length > 3 ? `, +${dupeMatches.length - 3} more` : ""}.
+                {confirmDupeAdd
+                  ? " Tap \"Add Song\" again to add it anyway."
+                  : " Adding again will create a duplicate."}
+              </div>
+            )}
             <label className="field-label">Singer (who's singing it)</label>
             <input
               className="field"
@@ -2421,7 +2581,7 @@ html, body {
               ))}
             </div>
             <div className="modal-actions">
-              <button type="button" className="btn-ghost" onClick={() => setShowAdd(false)}>Cancel</button>
+              <button type="button" className="btn-ghost" onClick={() => { setShowAdd(false); setConfirmDupeAdd(false); }}>Cancel</button>
               <button type="submit" className="btn-primary">Add Song</button>
             </div>
           </form>
@@ -2631,6 +2791,15 @@ html, body {
               onChange={(e) => setEventForm((f) => ({ ...f, location: e.target.value }))}
               placeholder="e.g. Studio 3, or the venue name"
             />
+            <label className="field-label">Remark / Note (optional)</label>
+            <textarea
+              className="field"
+              rows={2}
+              value={eventForm.note}
+              onChange={(e) => setEventForm((f) => ({ ...f, note: e.target.value }))}
+              placeholder="e.g. Bring the capo, focus on the bridge section"
+              style={{ resize: "vertical", fontFamily: "inherit" }}
+            />
             <label className="field-label">Songs (optional)</label>
             <input
               className="field"
@@ -2705,6 +2874,15 @@ html, body {
               value={editEventForm.location}
               onChange={(e) => setEditEventForm((f) => ({ ...f, location: e.target.value }))}
               placeholder="e.g. Studio 3, or the venue name"
+            />
+            <label className="field-label">Remark / Note (optional)</label>
+            <textarea
+              className="field"
+              rows={2}
+              value={editEventForm.note}
+              onChange={(e) => setEditEventForm((f) => ({ ...f, note: e.target.value }))}
+              placeholder="e.g. Bring the capo, focus on the bridge section"
+              style={{ resize: "vertical", fontFamily: "inherit" }}
             />
             <label className="field-label">Songs (optional)</label>
             <input
@@ -2815,6 +2993,7 @@ html, body {
           </div>
         </div>
       )}
+
     </div>
   );
 }
