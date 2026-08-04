@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
-import { Plus, X, Check, Pencil, Trash2, GripVertical, Link2, Printer, CalendarPlus, Play } from "lucide-react";
+import { Plus, X, Check, Pencil, Trash2, GripVertical, Link2, Printer, CalendarPlus, Play, Settings, Loader2, Wand2 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 // Every browser/device shares this single row in the "nextup_state" table.
@@ -41,22 +41,41 @@ const STATUS_FILTER_STYLE = {
   "Practiced": { bg: "rgba(95,184,156,0.14)", border: "rgba(95,184,156,0.4)", text: "#5fb89c" },
 };
 
-function getYouTubeEmbedUrl(url) {
+function extractYouTubeId(url) {
   if (!url) return null;
   try {
     const u = new URL(url);
-    let id = null;
     if (u.hostname.includes("youtu.be")) {
-      id = u.pathname.slice(1);
-    } else if (u.hostname.includes("youtube.com")) {
-      if (u.pathname.startsWith("/embed/")) id = u.pathname.split("/embed/")[1];
-      else id = u.searchParams.get("v");
+      return u.pathname.slice(1).split("/")[0] || null;
     }
-    if (!id) return null;
-    return `https://www.youtube.com/embed/${id}?autoplay=1`;
+    if (u.hostname.includes("youtube.com")) {
+      if (u.pathname.startsWith("/embed/")) return u.pathname.split("/embed/")[1].split("/")[0] || null;
+      if (u.pathname.startsWith("/shorts/")) return u.pathname.split("/shorts/")[1].split("/")[0] || null;
+      return u.searchParams.get("v");
+    }
+    return null;
   } catch {
     return null;
   }
+}
+
+function getYouTubeEmbedUrl(url) {
+  const id = extractYouTubeId(url);
+  if (!id) return null;
+  return `https://www.youtube.com/embed/${id}?autoplay=1`;
+}
+
+// Parses an ISO 8601 duration ("PT3M45S") as returned by the YouTube Data
+// API into whole seconds.
+function parseISO8601Duration(iso) {
+  if (!iso) return null;
+  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(iso);
+  if (!match) return null;
+  const hours = Number(match[1] || 0);
+  const minutes = Number(match[2] || 0);
+  const seconds = Number(match[3] || 0);
+  const total = hours * 3600 + minutes * 60 + seconds;
+  return total > 0 || iso === "PT0S" ? total : null;
 }
 
 function nextStatus(s) {
@@ -129,8 +148,19 @@ export default function NextUp() {
   const [editEventForm, setEditEventForm] = useState(null);
   const [calendarSearch, setCalendarSearch] = useState("");
   const heroRef = useRef(null);
-  const dragIdRef = useRef(null);
   const eventsRef = useRef(events);
+  const [draggingId, setDraggingId] = useState(null);
+  const [dragOverId, setDragOverId] = useState(null);
+
+  // YouTube auto-duration lookup. The API key is entered once and kept in
+  // localStorage — the app never ships a key of its own.
+  const [youtubeApiKey, setYoutubeApiKey] = useState(() => {
+    try { return localStorage.getItem("nextup_youtube_api_key") || ""; } catch { return ""; }
+  });
+  const [apiKeyDraft, setApiKeyDraft] = useState(youtubeApiKey);
+  const [showApiSettings, setShowApiSettings] = useState(false);
+  const [addDurationStatus, setAddDurationStatus] = useState(null); // null | "loading" | "done" | "error" | "nokey"
+  const [editDurationStatus, setEditDurationStatus] = useState(null);
 
   useEffect(() => {
     eventsRef.current = events;
@@ -375,6 +405,75 @@ export default function NextUp() {
     updateStatus(id, nextStatus(current));
     setPulse(true);
     setTimeout(() => setPulse(false), 420);
+  }
+
+  // Pointer-based drag reorder — works uniformly for mouse and touch (unlike
+  // the native HTML5 drag-and-drop API, which doesn't fire on touch devices).
+  // Dragging only starts from the handle, so scrolling the list elsewhere
+  // is unaffected.
+  function startDrag(e, id) {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDraggingId(id);
+    setDragOverId(id);
+  }
+
+  function dragMove(e) {
+    if (draggingId == null) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const ticketEl = el && el.closest("[data-song-id]");
+    if (ticketEl) {
+      const id = Number(ticketEl.getAttribute("data-song-id"));
+      setDragOverId((prev) => (prev === id ? prev : id));
+    }
+  }
+
+  function endDrag() {
+    if (draggingId != null && dragOverId != null && draggingId !== dragOverId) {
+      moveSong(draggingId, dragOverId);
+    }
+    setDraggingId(null);
+    setDragOverId(null);
+  }
+
+  function saveYoutubeApiKey() {
+    const trimmed = apiKeyDraft.trim();
+    setYoutubeApiKey(trimmed);
+    try { localStorage.setItem("nextup_youtube_api_key", trimmed); } catch {}
+    setShowApiSettings(false);
+  }
+
+  // Looks up a YouTube video's length via the YouTube Data API v3 and hands
+  // back a formatted mm:ss string through `onResult`. Requires the person to
+  // have entered their own (free) API key in Settings.
+  async function detectYouTubeDuration(url, setStatus, onResult) {
+    const id = extractYouTubeId(url);
+    if (!id) {
+      setStatus(null);
+      return;
+    }
+    if (!youtubeApiKey) {
+      setStatus("nokey");
+      return;
+    }
+    setStatus("loading");
+    try {
+      const res = await fetch(
+        `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${encodeURIComponent(id)}&key=${encodeURIComponent(youtubeApiKey)}`
+      );
+      if (!res.ok) throw new Error("request failed");
+      const data = await res.json();
+      const iso = data?.items?.[0]?.contentDetails?.duration;
+      const seconds = parseISO8601Duration(iso);
+      if (seconds == null) {
+        setStatus("error");
+        return;
+      }
+      onResult(formatDuration(seconds));
+      setStatus("done");
+    } catch {
+      setStatus("error");
+    }
   }
 
   function pickAsNext(id) {
@@ -1090,6 +1189,52 @@ html, body {
           transition: border-color .15s ease, background .15s ease;
         }
         .btn-add:hover { border-color: var(--amber-dim); background: var(--bg-alt); }
+        .btn-add.icon-only { padding: 9px; }
+
+        /* YouTube auto-duration detect UI */
+        .field-label-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin: 8px 0 4px;
+        }
+        .detect-btn {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-family: 'Work Sans', sans-serif;
+          font-weight: 600;
+          font-size: 11px;
+          padding: 4px 9px;
+          border-radius: 999px;
+          border: 1px solid rgba(240,180,41,0.4);
+          background: rgba(240,180,41,0.1);
+          color: var(--amber);
+          cursor: pointer;
+        }
+        .detect-btn:hover { background: rgba(240,180,41,0.18); }
+        .detect-btn:disabled { opacity: 0.6; cursor: default; }
+        .detect-status {
+          font-size: 11.5px;
+          color: var(--ink-faint);
+          margin: 5px 2px 2px;
+        }
+        .detect-status.success { color: var(--green); }
+        .detect-status.error { color: var(--red); }
+        .detect-link {
+          color: var(--amber);
+          text-decoration: underline;
+          cursor: pointer;
+        }
+        .settings-copy {
+          font-size: 12.5px;
+          line-height: 1.5;
+          color: var(--ink-dim);
+          margin: 6px 0;
+        }
+        .settings-copy a { color: var(--amber); }
+        .spin { animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
 
         /* Category filter chips */
         .cat-filters {
@@ -1329,7 +1474,8 @@ html, body {
           /* Header stacks and action buttons become equal-width tap targets */
           .topbar { flex-direction: column; align-items: stretch; gap: 12px; }
           .topbar-actions { width: 100%; }
-          .topbar-actions .btn-add { flex: 1; justify-content: center; min-height: 44px; }
+          .topbar-actions .btn-add:not(.icon-only) { flex: 1; justify-content: center; min-height: 44px; }
+          .topbar-actions .btn-add.icon-only { min-height: 44px; min-width: 44px; }
 
           /* Queue/Calendar switcher fills the width */
           .view-tabs { width: 100%; }
@@ -1373,7 +1519,7 @@ html, body {
           .ticket-key { display: none; }
           .langtag.small { display: none; }
           .ticket-status { padding: 5px 8px; font-size: 9px; }
-          .drag-handle { display: none; } /* drag-and-drop isn't touch-friendly; hide on mobile */
+          .drag-handle { padding: 10px 6px; margin: -10px -6px; }
           .checkbox { width: 22px; height: 22px; }
           .edit-btn { width: 32px; height: 32px; }
 
@@ -1493,9 +1639,25 @@ html, body {
           cursor: grab;
           flex-shrink: 0;
           display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 8px 4px;
+          margin: -8px -4px;
+          touch-action: none;
+          -webkit-user-select: none;
+          user-select: none;
         }
+        .drag-handle:hover { color: var(--ink-dim); }
         .drag-handle:active { cursor: grabbing; }
-        .ticket[draggable="true"]:hover { border-color: var(--ink-faint); }
+        .ticket.dragging {
+          opacity: 0.55;
+          border-color: var(--amber-dim);
+          box-shadow: 0 10px 24px rgba(0,0,0,0.35);
+        }
+        .ticket.drag-over {
+          border-color: var(--amber);
+          box-shadow: 0 0 0 2px rgba(242,169,76,0.35) inset;
+        }
 
         /* Gig mode */
         .gig-overlay {
@@ -1707,6 +1869,13 @@ html, body {
             <button className="btn-add btn-add-ghost" onClick={() => openAddEvent()}>
               <CalendarPlus size={15} strokeWidth={2.5} /> Add Event
             </button>
+            <button
+              className="btn-add icon-only"
+              onClick={() => { setApiKeyDraft(youtubeApiKey); setShowApiSettings(true); }}
+              title="YouTube API key settings"
+            >
+              <Settings size={15} strokeWidth={2.5} />
+            </button>
           </div>
         </div>
 
@@ -1896,18 +2065,23 @@ html, body {
             return (
               <React.Fragment key={song.id}>
               <div
-                className={"ticket" + (isChecked ? " checked" : "")}
-                draggable
-                onDragStart={() => (dragIdRef.current = song.id)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (dragIdRef.current) moveSong(dragIdRef.current, song.id);
-                  dragIdRef.current = null;
-                }}
+                className={
+                  "ticket" +
+                  (isChecked ? " checked" : "") +
+                  (draggingId === song.id ? " dragging" : "") +
+                  (dragOverId === song.id && draggingId != null && draggingId !== song.id ? " drag-over" : "")
+                }
+                data-song-id={song.id}
               >
-                <span className="drag-handle" title="Drag to reorder">
-                  <GripVertical size={14} />
+                <span
+                  className="drag-handle"
+                  title="Drag to reorder"
+                  onPointerDown={(e) => startDrag(e, song.id)}
+                  onPointerMove={dragMove}
+                  onPointerUp={endDrag}
+                  onPointerCancel={endDrag}
+                >
+                  <GripVertical size={16} />
                 </span>
                 <span
                   className={"checkbox" + (isChecked ? " on" : "")}
@@ -2184,16 +2358,43 @@ html, body {
             <input
               className="field"
               value={form.youtubeLink}
-              onChange={(e) => setForm((f) => ({ ...f, youtubeLink: e.target.value }))}
+              onChange={(e) => { setForm((f) => ({ ...f, youtubeLink: e.target.value })); setAddDurationStatus(null); }}
+              onBlur={() => {
+                if (form.youtubeLink) {
+                  detectYouTubeDuration(form.youtubeLink, setAddDurationStatus, (val) => setForm((f) => ({ ...f, duration: val })));
+                }
+              }}
               placeholder="https://youtube.com/watch?v=…"
             />
-            <label className="field-label">Duration (optional)</label>
+            <div className="field-label-row">
+              <span className="field-label" style={{ margin: 0 }}>Duration (optional)</span>
+              {form.youtubeLink && (
+                <button
+                  type="button"
+                  className="detect-btn"
+                  disabled={addDurationStatus === "loading"}
+                  onClick={() => detectYouTubeDuration(form.youtubeLink, setAddDurationStatus, (val) => setForm((f) => ({ ...f, duration: val })))}
+                >
+                  {addDurationStatus === "loading" ? <Loader2 size={11} className="spin" /> : <Wand2 size={11} />}
+                  {addDurationStatus === "loading" ? "Detecting…" : "Auto-detect"}
+                </button>
+              )}
+            </div>
             <input
               className="field"
               value={form.duration}
-              onChange={(e) => setForm((f) => ({ ...f, duration: e.target.value }))}
+              onChange={(e) => { setForm((f) => ({ ...f, duration: e.target.value })); setAddDurationStatus(null); }}
               placeholder="mm:ss, e.g. 3:45"
             />
+            {addDurationStatus === "done" && <div className="detect-status success">Duration detected from YouTube.</div>}
+            {addDurationStatus === "error" && <div className="detect-status error">Couldn't detect duration — enter it manually.</div>}
+            {addDurationStatus === "nokey" && (
+              <div className="detect-status">
+                Add a YouTube API key in{" "}
+                <span className="detect-link" onClick={() => { setApiKeyDraft(youtubeApiKey); setShowApiSettings(true); }}>Settings</span>{" "}
+                to auto-detect duration.
+              </div>
+            )}
             <label className="field-check">
               <input
                 type="checkbox"
@@ -2312,16 +2513,43 @@ html, body {
             <input
               className="field"
               value={editForm.youtubeLink}
-              onChange={(e) => setEditForm((f) => ({ ...f, youtubeLink: e.target.value }))}
+              onChange={(e) => { setEditForm((f) => ({ ...f, youtubeLink: e.target.value })); setEditDurationStatus(null); }}
+              onBlur={() => {
+                if (editForm.youtubeLink) {
+                  detectYouTubeDuration(editForm.youtubeLink, setEditDurationStatus, (val) => setEditForm((f) => ({ ...f, duration: val })));
+                }
+              }}
               placeholder="https://youtube.com/watch?v=…"
             />
-            <label className="field-label">Duration (optional)</label>
+            <div className="field-label-row">
+              <span className="field-label" style={{ margin: 0 }}>Duration (optional)</span>
+              {editForm.youtubeLink && (
+                <button
+                  type="button"
+                  className="detect-btn"
+                  disabled={editDurationStatus === "loading"}
+                  onClick={() => detectYouTubeDuration(editForm.youtubeLink, setEditDurationStatus, (val) => setEditForm((f) => ({ ...f, duration: val })))}
+                >
+                  {editDurationStatus === "loading" ? <Loader2 size={11} className="spin" /> : <Wand2 size={11} />}
+                  {editDurationStatus === "loading" ? "Detecting…" : "Auto-detect"}
+                </button>
+              )}
+            </div>
             <input
               className="field"
               value={editForm.duration}
-              onChange={(e) => setEditForm((f) => ({ ...f, duration: e.target.value }))}
+              onChange={(e) => { setEditForm((f) => ({ ...f, duration: e.target.value })); setEditDurationStatus(null); }}
               placeholder="mm:ss, e.g. 3:45"
             />
+            {editDurationStatus === "done" && <div className="detect-status success">Duration detected from YouTube.</div>}
+            {editDurationStatus === "error" && <div className="detect-status error">Couldn't detect duration — enter it manually.</div>}
+            {editDurationStatus === "nokey" && (
+              <div className="detect-status">
+                Add a YouTube API key in{" "}
+                <span className="detect-link" onClick={() => { setApiKeyDraft(youtubeApiKey); setShowApiSettings(true); }}>Settings</span>{" "}
+                to auto-detect duration.
+              </div>
+            )}
             <label className="field-check">
               <input
                 type="checkbox"
@@ -2510,6 +2738,50 @@ html, body {
               <button type="submit" className="btn-primary">Save Changes</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {showApiSettings && (
+        <div className="modal-backdrop" onClick={() => setShowApiSettings(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <span>YouTube Auto-Duration</span>
+              <span className="modal-close" onClick={() => setShowApiSettings(false)}><X size={16} /></span>
+            </div>
+            <p className="settings-copy">
+              Paste a YouTube API key to auto-fill a song's duration from its YouTube link. The key is stored
+              only on this device (browser local storage) and is never sent anywhere except Google's API.
+            </p>
+            <p className="settings-copy">
+              Get a free key from the{" "}
+              <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noreferrer">
+                Google Cloud Console
+              </a>{" "}
+              — enable "YouTube Data API v3" on a project, then create an API key under Credentials.
+            </p>
+            <label className="field-label">YouTube Data API Key</label>
+            <input
+              className="field"
+              value={apiKeyDraft}
+              onChange={(e) => setApiKeyDraft(e.target.value)}
+              placeholder="AIza…"
+              autoFocus
+            />
+            <div className="modal-actions">
+              {youtubeApiKey && (
+                <button
+                  type="button"
+                  className="btn-danger"
+                  onClick={() => { setApiKeyDraft(""); setYoutubeApiKey(""); try { localStorage.removeItem("nextup_youtube_api_key"); } catch {} setShowApiSettings(false); }}
+                >
+                  <Trash2 size={13} strokeWidth={2.2} /> Remove Key
+                </button>
+              )}
+              <div style={{ flex: 1 }} />
+              <button type="button" className="btn-ghost" onClick={() => setShowApiSettings(false)}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={saveYoutubeApiKey}>Save</button>
+            </div>
+          </div>
         </div>
       )}
 
