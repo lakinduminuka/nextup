@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
-import { Plus, X, Check, Pencil, Trash2, GripVertical, Link2, Printer, CalendarPlus, Play, Settings, Loader2, Wand2 } from "lucide-react";
+import { Plus, X, Check, Pencil, Trash2, GripVertical, Link2, Printer, CalendarPlus, Play, Settings, Loader2, Wand2, Lock } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 // Every browser/device shares this single row in the "nextup_state" table.
@@ -7,6 +7,32 @@ const STATE_ROW_ID = 1;
 // Calendar events (practice days / gigs) are stored in a second row so they
 // sync independently of the song library.
 const EVENTS_ROW_ID = 2;
+
+// Shared passcode for band members. Change this to whatever code you hand
+// out to the band — anyone who enters it correctly is remembered as a
+// verified user on that browser (via localStorage), so they won't be asked
+// again on that device. This is a lightweight door, not real security: the
+// code lives in this file, which the browser downloads, so treat it as a
+// "keep casual visitors out" gate rather than protection for sensitive data.
+//
+// Changing this value automatically signs out every device: what's stored
+// in localStorage is a checksum of the passcode that unlocked it, not just
+// a plain "true" — so as soon as this constant changes, the old checksum
+// stops matching and everyone is asked to re-enter the (new) passcode.
+const APP_PASSCODE = "Lumos2026$";
+const PASSCODE_STORAGE_KEY = "nextup_verified_code";
+
+// Small non-cryptographic checksum — good enough to detect "does the
+// passcode stored on this device match the current APP_PASSCODE", not
+// meant to be secure (see note above: the real passcode is visible in
+// this file's source regardless).
+function passcodeChecksum(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash * 31 + str.charCodeAt(i)) | 0;
+  }
+  return hash.toString(36);
+}
 
 const RAW_SESSIONS = [{"name": "First Session", "songs": [{"id": 0, "title": "Oba dutu e mul dine", "artist": "Gypsies", "key": "F", "status": "Practiced", "remark": "Tranceposed to G after last Chorus"}, {"id": 1, "title": "Sanasennam Ma", "artist": "Senaka Batagoda", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 2, "title": "Dagakara Hadakari", "artist": "Various Artists", "key": "Bb", "status": "Need to Practice", "remark": null}, {"id": 3, "title": "Unmadini Medley", "artist": "BNS", "key": "C", "status": "Practiced Once", "remark": null}, {"id": 4, "title": "Perfect", "artist": "Ed Sheeran", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 5, "title": "Hitha Hiri Watunado", "artist": "Bachi Susan", "key": "B", "status": "Practiced Once", "remark": null}, {"id": 6, "title": "Tharuka Niwa Dura", "artist": "Ajith Bandara", "key": "Em", "status": "Practiced Once", "remark": null}, {"id": 7, "title": "Soduru Atheethaya", "artist": "TM Jayarathne", "key": "F", "status": "Need to Practice", "remark": null}, {"id": 8, "title": "Anganawo", "artist": "Rookantha Gunathilake", "key": "F", "status": "Practiced Once", "remark": null}, {"id": 9, "title": "Atha Ran Wiman", "artist": "Priya Sooriayasena", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 10, "title": "Sansarini", "artist": "Yasas Madagedara", "key": "Ab", "status": "Need to Practice", "remark": null}, {"id": 11, "title": "Eka dawasaka", "artist": "Sandeep Jayalath", "key": "Ebm", "status": "Need to Practice", "remark": null}, {"id": 12, "title": "Aadaree kiyanna (Shenal)", "artist": "Piyath Rajapakse", "key": "E", "status": "Need to Practice", "remark": null}, {"id": 13, "title": "Unmada prema geeya", "artist": "BNS", "key": "C", "status": "Need to Practice", "remark": null}, {"id": 14, "title": "Thawa Dawasak", "artist": "Keerthi Pasquel", "key": "E", "status": "Need to Practice", "remark": null}, {"id": 15, "title": "Ra ahase", "artist": "Billy Fernando", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 16, "title": "Oba kamathinam Mata kiyanna", "artist": "Gypsies", "key": "F", "status": "Need to Practice", "remark": null}, {"id": 17, "title": "Raya Pahan Kala", "artist": "nadeeka jayawardana", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 18, "title": "Mandaram Kathawe", "artist": "Wasthi", "key": "Dm", "status": "Need to Practice", "remark": null}, {"id": 19, "title": "Marunu hithe", "artist": "Wasthi", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 20, "title": "Mathake Hasaral", "artist": "Dushyanth Weeraman", "key": "Bbm", "status": "Need to Practice", "remark": null}]}, {"name": "Second Session", "songs": [{"id": 21, "title": "Ran wan mal dam", "artist": "Centigratez", "key": "Dm", "status": "Need to Practice", "remark": null}, {"id": 22, "title": "Tiken Tika", "artist": "Daddy", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 23, "title": "Chandrayan Pidu", "artist": "Daddy", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 24, "title": "Sarath Sande", "artist": "Charith Abesinghe", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 25, "title": "Dasa Piyagath kala", "artist": "Clarence Wijewardana", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 26, "title": "Mal Madahasa Medley", "artist": "Various Artist", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 27, "title": "Sili Sili Seethala", "artist": "Raj Seneviratne", "key": "Bb", "status": "Need to Practice", "remark": null}, {"id": 28, "title": "Nurawani", "artist": "Wasthi", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 29, "title": "Rahasin Awith", "artist": "Sureni De mel", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 30, "title": "Malsara", "artist": "Chamara Ranawaka", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 31, "title": "Sanda Basa giya thana na", "artist": "Rookantha", "key": "Bbm", "status": "Need to Practice", "remark": null}, {"id": 32, "title": "Api aye hamu nowena", "artist": "Sanka dineth", "key": "F#m", "status": "Need to Practice", "remark": null}, {"id": 33, "title": "Mage manik apsarawi", "artist": "Tharindu Arsecularathna", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 34, "title": "Jeththu None", "artist": "Dushyanth Weeraman", "key": "\u2014", "status": "Need to Practice", "remark": null}, {"id": 35, "title": "Nelum Wilen", "artist": "Dushyanth Weeraman", "key": "\u2014", "status": "Need to Practice", "remark": null}, {"id": 36, "title": "Ratakin eha", "artist": "Priya Sooriyasena", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 37, "title": "Mathakayan Obe", "artist": "Chamara Weerasinghe", "key": "Bbm", "status": "Need to Practice", "remark": null}, {"id": 38, "title": "Ninda Noyana", "artist": "Ranindu", "key": "Ebm", "status": "Need to Practice", "remark": null}, {"id": 39, "title": "Hinahenne mang", "artist": "Ranindu", "key": "Cm", "status": "Need to Practice", "remark": null}]}, {"name": "Third Session", "songs": [{"id": 40, "title": "Sumihiri pane", "artist": "Desmond De Silva", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 41, "title": "Rookantha Medley", "artist": "Unknown", "key": "\u2014", "status": "Need to Practice", "remark": null}, {"id": 42, "title": "Sawandari", "artist": "Sangeeth Wijesuriya", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 43, "title": "Mata sithanna ba Medley", "artist": "Unknown", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 44, "title": "Radio Active/Roo Sara", "artist": "Unknown", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 45, "title": "Thaththa mata anapu tokka", "artist": "Gypsies", "key": "Eb", "status": "Need to Practice", "remark": null}, {"id": 46, "title": "Ulath ekai Pilath ekai", "artist": "Rookantha", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 47, "title": "Layla", "artist": "Marianz", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 48, "title": "Bombe Motai", "artist": "Wasthi", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 49, "title": "Sudu Ammiya", "artist": "Wasthi", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 50, "title": "Yami Pain Yami", "artist": "Wasthi", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 51, "title": "Ingi Marana Tharu Rana", "artist": "K.Sujeewa", "key": "Ebm", "status": "Need to Practice", "remark": null}, {"id": 52, "title": "Me Diaganthaye", "artist": "Rookantha Gunathilaka", "key": "E", "status": "Need to Practice", "remark": null}, {"id": 53, "title": "Thrailoka", "artist": "Shane Zing", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 54, "title": "Sanwedana", "artist": "Shane Zing", "key": "B", "status": "Need to Practice", "remark": null}]}];
 
@@ -121,6 +147,30 @@ function flatten(sessions) {
 }
 
 export default function NextUp() {
+  const [verified, setVerified] = useState(() => {
+    try { return localStorage.getItem(PASSCODE_STORAGE_KEY) === passcodeChecksum(APP_PASSCODE); } catch { return false; }
+  });
+  const [passcodeInput, setPasscodeInput] = useState("");
+  const [passcodeError, setPasscodeError] = useState(false);
+
+  function handleUnlock(e) {
+    e.preventDefault();
+    if (passcodeInput.trim() === APP_PASSCODE) {
+      setPasscodeError(false);
+      setPasscodeInput("");
+      try { localStorage.setItem(PASSCODE_STORAGE_KEY, passcodeChecksum(APP_PASSCODE)); } catch {}
+      setVerified(true);
+    } else {
+      setPasscodeError(true);
+      setPasscodeInput("");
+    }
+  }
+
+  function handleLock() {
+    try { localStorage.removeItem(PASSCODE_STORAGE_KEY); } catch {}
+    setVerified(false);
+  }
+
   const [sessions, setSessions] = useState(RAW_SESSIONS);
   const [loaded, setLoaded] = useState(false);
   const [syncError, setSyncError] = useState(null);
@@ -1978,6 +2028,35 @@ html, body {
         }
       `}</style>
 
+      {!verified ? (
+        <div className="modal-backdrop">
+          <form className="modal" onSubmit={handleUnlock} style={{ textAlign: "center" }}>
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: "26px", letterSpacing: "0.03em", color: "var(--ink)" }}>
+              LUMOS<span style={{ color: "var(--amber)" }}>Practices</span>
+            </div>
+            <div style={{ fontSize: "13px", color: "var(--ink-dim)", marginTop: "4px", marginBottom: "18px" }}>
+              Band access only — enter the passcode to continue.
+            </div>
+            <input
+              type="password"
+              autoFocus
+              className="field"
+              value={passcodeInput}
+              onChange={(e) => { setPasscodeInput(e.target.value); setPasscodeError(false); }}
+              placeholder="Passcode"
+              style={{ textAlign: "center", letterSpacing: "0.1em", borderColor: passcodeError ? "var(--red)" : undefined }}
+            />
+            {passcodeError && (
+              <div style={{ color: "var(--red)", fontSize: "12px", marginTop: "8px" }}>
+                That's not the right passcode — try again.
+              </div>
+            )}
+            <button type="submit" className="btn-primary" style={{ width: "100%", marginTop: "16px", justifyContent: "center" }}>
+              Unlock
+            </button>
+          </form>
+        </div>
+      ) : (
       <div className="wrap">
         {todayFilter && todayNotes.length > 0 && (
           <div className="today-note-bar">
@@ -2013,6 +2092,13 @@ html, body {
               title="YouTube API key settings"
             >
               <Settings size={15} strokeWidth={2.5} />
+            </button>
+            <button
+              className="btn-add icon-only"
+              onClick={handleLock}
+              title="Lock this device (ask for the passcode again next time)"
+            >
+              <Lock size={15} strokeWidth={2.5} />
             </button>
           </div>
         </div>
@@ -2416,6 +2502,7 @@ html, body {
           </div>
         )}
       </div>
+      )}
 
       {selected.size > 0 && (
         <div className="bulk-bar">
