@@ -262,7 +262,8 @@ export default function NextUp() {
   // the hero card jump to a different song right after marking one
   // "Practiced Once" — this keeps it pinned to the song you're looking at.
   useEffect(() => {
-    const pool = activeSession === "all" ? allSongs : allSongs.filter((s) => s.session === activeSession);
+    let pool = activeSession === "all" ? allSongs : allSongs.filter((s) => s.session === activeSession);
+    if (todayFilter) pool = pool.filter((s) => todaySongIds.has(s.id));
     const stillValid = manualId != null && pool.some((s) => s.id === manualId);
     if (!stillValid) {
       const pick =
@@ -272,12 +273,28 @@ export default function NextUp() {
         null;
       setManualId(pick ? pick.id : null);
     }
-  }, [allSongs, activeSession]);
+  }, [allSongs, activeSession, todayFilter, todaySongIds]);
+
+  // Toggling the Today filter is a deliberate switch of scope — jump the
+  // hero straight to the first song in the new queue rather than leaving
+  // whatever was showing before (even if it happens to still be valid).
+  useEffect(() => {
+    let pool = activeSession === "all" ? allSongs : allSongs.filter((s) => s.session === activeSession);
+    if (todayFilter) pool = pool.filter((s) => todaySongIds.has(s.id));
+    const pick =
+      pool.find((s) => s.status === "Need to Practice") ||
+      pool.find((s) => s.status === "Practiced Once") ||
+      pool[0] ||
+      null;
+    setManualId(pick ? pick.id : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayFilter]);
 
   const nextSong = useMemo(() => {
-    const pool = activeSession === "all" ? allSongs : allSongs.filter((s) => s.session === activeSession);
+    let pool = activeSession === "all" ? allSongs : allSongs.filter((s) => s.session === activeSession);
+    if (todayFilter) pool = pool.filter((s) => todaySongIds.has(s.id));
     return pool.find((s) => s.id === manualId) || null;
-  }, [allSongs, activeSession, manualId]);
+  }, [allSongs, activeSession, todayFilter, todaySongIds, manualId]);
 
   const queue = useMemo(() => {
     if (!nextSong) return [];
