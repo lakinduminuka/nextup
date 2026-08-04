@@ -1,15 +1,18 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
-import { Plus, X, Check, Pencil, Trash2, GripVertical, Link2, Printer } from "lucide-react";
+import { Plus, X, Check, Pencil, Trash2, GripVertical, Link2, Printer, CalendarPlus, Play } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 // Every browser/device shares this single row in the "nextup_state" table.
 const STATE_ROW_ID = 1;
+// Calendar events (practice days / gigs) are stored in a second row so they
+// sync independently of the song library.
+const EVENTS_ROW_ID = 2;
 
 const RAW_SESSIONS = [{"name": "First Session", "songs": [{"id": 0, "title": "Oba dutu e mul dine", "artist": "Gypsies", "key": "F", "status": "Practiced", "remark": "Tranceposed to G after last Chorus"}, {"id": 1, "title": "Sanasennam Ma", "artist": "Senaka Batagoda", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 2, "title": "Dagakara Hadakari", "artist": "Various Artists", "key": "Bb", "status": "Need to Practice", "remark": null}, {"id": 3, "title": "Unmadini Medley", "artist": "BNS", "key": "C", "status": "Practiced Once", "remark": null}, {"id": 4, "title": "Perfect", "artist": "Ed Sheeran", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 5, "title": "Hitha Hiri Watunado", "artist": "Bachi Susan", "key": "B", "status": "Practiced Once", "remark": null}, {"id": 6, "title": "Tharuka Niwa Dura", "artist": "Ajith Bandara", "key": "Em", "status": "Practiced Once", "remark": null}, {"id": 7, "title": "Soduru Atheethaya", "artist": "TM Jayarathne", "key": "F", "status": "Need to Practice", "remark": null}, {"id": 8, "title": "Anganawo", "artist": "Rookantha Gunathilake", "key": "F", "status": "Practiced Once", "remark": null}, {"id": 9, "title": "Atha Ran Wiman", "artist": "Priya Sooriayasena", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 10, "title": "Sansarini", "artist": "Yasas Madagedara", "key": "Ab", "status": "Need to Practice", "remark": null}, {"id": 11, "title": "Eka dawasaka", "artist": "Sandeep Jayalath", "key": "Ebm", "status": "Need to Practice", "remark": null}, {"id": 12, "title": "Aadaree kiyanna (Shenal)", "artist": "Piyath Rajapakse", "key": "E", "status": "Need to Practice", "remark": null}, {"id": 13, "title": "Unmada prema geeya", "artist": "BNS", "key": "C", "status": "Need to Practice", "remark": null}, {"id": 14, "title": "Thawa Dawasak", "artist": "Keerthi Pasquel", "key": "E", "status": "Need to Practice", "remark": null}, {"id": 15, "title": "Ra ahase", "artist": "Billy Fernando", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 16, "title": "Oba kamathinam Mata kiyanna", "artist": "Gypsies", "key": "F", "status": "Need to Practice", "remark": null}, {"id": 17, "title": "Raya Pahan Kala", "artist": "nadeeka jayawardana", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 18, "title": "Mandaram Kathawe", "artist": "Wasthi", "key": "Dm", "status": "Need to Practice", "remark": null}, {"id": 19, "title": "Marunu hithe", "artist": "Wasthi", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 20, "title": "Mathake Hasaral", "artist": "Dushyanth Weeraman", "key": "Bbm", "status": "Need to Practice", "remark": null}]}, {"name": "Second Session", "songs": [{"id": 21, "title": "Ran wan mal dam", "artist": "Centigratez", "key": "Dm", "status": "Need to Practice", "remark": null}, {"id": 22, "title": "Tiken Tika", "artist": "Daddy", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 23, "title": "Chandrayan Pidu", "artist": "Daddy", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 24, "title": "Sarath Sande", "artist": "Charith Abesinghe", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 25, "title": "Dasa Piyagath kala", "artist": "Clarence Wijewardana", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 26, "title": "Mal Madahasa Medley", "artist": "Various Artist", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 27, "title": "Sili Sili Seethala", "artist": "Raj Seneviratne", "key": "Bb", "status": "Need to Practice", "remark": null}, {"id": 28, "title": "Nurawani", "artist": "Wasthi", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 29, "title": "Rahasin Awith", "artist": "Sureni De mel", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 30, "title": "Malsara", "artist": "Chamara Ranawaka", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 31, "title": "Sanda Basa giya thana na", "artist": "Rookantha", "key": "Bbm", "status": "Need to Practice", "remark": null}, {"id": 32, "title": "Api aye hamu nowena", "artist": "Sanka dineth", "key": "F#m", "status": "Need to Practice", "remark": null}, {"id": 33, "title": "Mage manik apsarawi", "artist": "Tharindu Arsecularathna", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 34, "title": "Jeththu None", "artist": "Dushyanth Weeraman", "key": "\u2014", "status": "Need to Practice", "remark": null}, {"id": 35, "title": "Nelum Wilen", "artist": "Dushyanth Weeraman", "key": "\u2014", "status": "Need to Practice", "remark": null}, {"id": 36, "title": "Ratakin eha", "artist": "Priya Sooriyasena", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 37, "title": "Mathakayan Obe", "artist": "Chamara Weerasinghe", "key": "Bbm", "status": "Need to Practice", "remark": null}, {"id": 38, "title": "Ninda Noyana", "artist": "Ranindu", "key": "Ebm", "status": "Need to Practice", "remark": null}, {"id": 39, "title": "Hinahenne mang", "artist": "Ranindu", "key": "Cm", "status": "Need to Practice", "remark": null}]}, {"name": "Third Session", "songs": [{"id": 40, "title": "Sumihiri pane", "artist": "Desmond De Silva", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 41, "title": "Rookantha Medley", "artist": "Unknown", "key": "\u2014", "status": "Need to Practice", "remark": null}, {"id": 42, "title": "Sawandari", "artist": "Sangeeth Wijesuriya", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 43, "title": "Mata sithanna ba Medley", "artist": "Unknown", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 44, "title": "Radio Active/Roo Sara", "artist": "Unknown", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 45, "title": "Thaththa mata anapu tokka", "artist": "Gypsies", "key": "Eb", "status": "Need to Practice", "remark": null}, {"id": 46, "title": "Ulath ekai Pilath ekai", "artist": "Rookantha", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 47, "title": "Layla", "artist": "Marianz", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 48, "title": "Bombe Motai", "artist": "Wasthi", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 49, "title": "Sudu Ammiya", "artist": "Wasthi", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 50, "title": "Yami Pain Yami", "artist": "Wasthi", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 51, "title": "Ingi Marana Tharu Rana", "artist": "K.Sujeewa", "key": "Ebm", "status": "Need to Practice", "remark": null}, {"id": 52, "title": "Me Diaganthaye", "artist": "Rookantha Gunathilaka", "key": "E", "status": "Need to Practice", "remark": null}, {"id": 53, "title": "Thrailoka", "artist": "Shane Zing", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 54, "title": "Sanwedana", "artist": "Shane Zing", "key": "B", "status": "Need to Practice", "remark": null}]}];
 
 // give every seed song an (empty) categories array to tag it into setlists,
 // and default the language to Sinhala since that's what the whole sheet is
-RAW_SESSIONS.forEach((s) => s.songs.forEach((song) => { song.categories = []; song.language = "Sinhala"; song.singer = ""; song.link = ""; song.practicedAt = null; song.duration = null; }));
+RAW_SESSIONS.forEach((s) => s.songs.forEach((song) => { song.categories = []; song.language = "Sinhala"; song.singer = ""; song.link = ""; song.practicedAt = null; song.duration = null; song.youtubeLink = ""; }));
 let NEXT_ID = Math.max(...RAW_SESSIONS.flatMap((s) => s.songs.map((sg) => sg.id))) + 1;
 
 const CATEGORIES = ["Wedding", "Restaurant"];
@@ -37,6 +40,24 @@ const STATUS_FILTER_STYLE = {
   "Practiced Once": { bg: "rgba(242,169,76,0.14)", border: "rgba(242,169,76,0.4)", text: "#f2a94c" },
   "Practiced": { bg: "rgba(95,184,156,0.14)", border: "rgba(95,184,156,0.4)", text: "#5fb89c" },
 };
+
+function getYouTubeEmbedUrl(url) {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    let id = null;
+    if (u.hostname.includes("youtu.be")) {
+      id = u.pathname.slice(1);
+    } else if (u.hostname.includes("youtube.com")) {
+      if (u.pathname.startsWith("/embed/")) id = u.pathname.split("/embed/")[1];
+      else id = u.searchParams.get("v");
+    }
+    if (!id) return null;
+    return `https://www.youtube.com/embed/${id}?autoplay=1`;
+  } catch {
+    return null;
+  }
+}
 
 function nextStatus(s) {
   const i = STATUS_ORDER.indexOf(s);
@@ -95,12 +116,56 @@ export default function NextUp() {
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
-  const [form, setForm] = useState({ title: "", artist: "", singer: "", key: "", session: RAW_SESSIONS[0].name, remark: "", language: "Sinhala", categories: [], link: "", duration: "" });
+  const [form, setForm] = useState({ title: "", artist: "", singer: "", key: "", session: RAW_SESSIONS[0].name, remark: "", language: "Sinhala", categories: [], link: "", duration: "", practicingToday: false, youtubeLink: "" });
+  const [playingId, setPlayingId] = useState(null);
   const [gigMode, setGigMode] = useState(false);
+  const [view, setView] = useState("queue");
+  const [events, setEvents] = useState([]);
+  const [eventsLoaded, setEventsLoaded] = useState(false);
+  const [showAddEvent, setShowAddEvent] = useState(false);
+  const [eventForm, setEventForm] = useState({ date: "", type: "Practice", title: "", location: "", songIds: [] });
+  const [eventSongSearch, setEventSongSearch] = useState("");
+  const [editingEventId, setEditingEventId] = useState(null);
+  const [editEventForm, setEditEventForm] = useState(null);
+  const [calendarSearch, setCalendarSearch] = useState("");
   const heroRef = useRef(null);
   const dragIdRef = useRef(null);
+  const eventsRef = useRef(events);
+
+  useEffect(() => {
+    eventsRef.current = events;
+  }, [events]);
 
   const allSongs = useMemo(() => flatten(sessions), [sessions]);
+
+  const todayStr = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }, []);
+
+  const upcomingEvents = useMemo(() => {
+    const sorted = [...events].sort((a, b) => a.date.localeCompare(b.date));
+    const q = calendarSearch.trim().toLowerCase();
+    if (!q) return sorted;
+    return sorted.filter((ev) => {
+      const songMatch = ev.songIds.some((id) => {
+        const song = allSongs.find((s) => s.id === id);
+        return song && (song.title.toLowerCase().includes(q) || song.artist.toLowerCase().includes(q));
+      });
+      return (
+        songMatch ||
+        ev.title.toLowerCase().includes(q) ||
+        (ev.location || "").toLowerCase().includes(q) ||
+        ev.type.toLowerCase().includes(q)
+      );
+    });
+  }, [events, calendarSearch, allSongs]);
+
+  const eventSongOptions = useMemo(() => {
+    const q = eventSongSearch.trim().toLowerCase();
+    if (!q) return allSongs;
+    return allSongs.filter((s) => s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q));
+  }, [allSongs, eventSongSearch]);
 
   const filteredSongs = useMemo(() => {
     let list = allSongs;
@@ -171,6 +236,119 @@ export default function NextUp() {
         ),
       }))
     );
+  }
+
+  function togglePlay(id) {
+    setPlayingId((prev) => (prev === id ? null : id));
+  }
+
+  function isPracticingToday(songId) {
+    return events.some((ev) => ev.date === todayStr && ev.songIds.includes(songId));
+  }
+
+  function addSongToTodayEvent(songId) {
+    setEvents((prev) => {
+      const existing = prev.find((ev) => ev.date === todayStr && ev.type === "Practice");
+      if (existing) {
+        if (existing.songIds.includes(songId)) return prev;
+        return prev.map((ev) => (ev.id === existing.id ? { ...ev, songIds: [...ev.songIds, songId] } : ev));
+      }
+      return [...prev, { id: Date.now(), date: todayStr, type: "Practice", title: "Practice Session", location: "", songIds: [songId] }];
+    });
+  }
+
+  function removeSongFromTodayEvent(songId) {
+    setEvents((prev) =>
+      prev.map((ev) => (ev.date === todayStr ? { ...ev, songIds: ev.songIds.filter((id) => id !== songId) } : ev))
+    );
+  }
+
+  function openAddEvent(presetSongIds) {
+    setEventForm({ date: "", type: "Practice", title: "", location: "", songIds: presetSongIds || [] });
+    setEventSongSearch("");
+    setShowAddEvent(true);
+  }
+
+  function quickAddToCalendar(songId) {
+    openAddEvent([songId]);
+  }
+
+  function addEvent(e) {
+    e.preventDefault();
+    if (!eventForm.date) return;
+    const newEvent = {
+      id: Date.now(),
+      date: eventForm.date,
+      type: eventForm.type,
+      title: eventForm.title.trim() || (eventForm.type === "Gig" ? "Gig" : "Practice Session"),
+      location: eventForm.location.trim(),
+      songIds: eventForm.songIds,
+    };
+    setEvents((prev) => [...prev, newEvent]);
+    setEventForm({ date: "", type: "Practice", title: "", location: "", songIds: [] });
+    setEventSongSearch("");
+    setShowAddEvent(false);
+  }
+
+  function openEditEvent(ev) {
+    setEditingEventId(ev.id);
+    setEditEventForm({
+      date: ev.date,
+      type: ev.type,
+      title: ev.title,
+      location: ev.location || "",
+      songIds: [...ev.songIds],
+    });
+    setEventSongSearch("");
+  }
+
+  function closeEditEvent() {
+    setEditingEventId(null);
+    setEditEventForm(null);
+    setEventSongSearch("");
+  }
+
+  function toggleEditEventSong(id) {
+    setEditEventForm((f) => ({
+      ...f,
+      songIds: f.songIds.includes(id) ? f.songIds.filter((x) => x !== id) : [...f.songIds, id],
+    }));
+  }
+
+  function saveEditEvent(e) {
+    e.preventDefault();
+    if (!editEventForm.date) return;
+    setEvents((prev) =>
+      prev.map((ev) =>
+        ev.id === editingEventId
+          ? {
+              ...ev,
+              date: editEventForm.date,
+              type: editEventForm.type,
+              title: editEventForm.title.trim() || (editEventForm.type === "Gig" ? "Gig" : "Practice Session"),
+              location: editEventForm.location.trim(),
+              songIds: editEventForm.songIds,
+            }
+          : ev
+      )
+    );
+    closeEditEvent();
+  }
+
+  function deleteEvent(id) {
+    setEvents((prev) => prev.filter((ev) => ev.id !== id));
+  }
+
+  function toggleEventSong(id) {
+    setEventForm((f) => ({
+      ...f,
+      songIds: f.songIds.includes(id) ? f.songIds.filter((x) => x !== id) : [...f.songIds, id],
+    }));
+  }
+
+  function formatEventDate(dateStr) {
+    const d = new Date(dateStr + "T00:00:00");
+    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
   }
 
   function moveSong(draggedId, targetId) {
@@ -277,11 +455,13 @@ export default function NextUp() {
       link: form.link.trim() || "",
       practicedAt: null,
       duration: parseDuration(form.duration),
+      youtubeLink: form.youtubeLink.trim() || "",
     };
     setSessions((prev) =>
       prev.map((s) => (s.name === form.session ? { ...s, songs: [...s.songs, newSong] } : s))
     );
-    setForm({ title: "", artist: "", singer: "", key: "", session: form.session, remark: "", language: "Sinhala", categories: [], link: "", duration: "" });
+    if (form.practicingToday) addSongToTodayEvent(newSong.id);
+    setForm({ title: "", artist: "", singer: "", key: "", session: form.session, remark: "", language: "Sinhala", categories: [], link: "", duration: "", practicingToday: false, youtubeLink: "" });
     setShowAdd(false);
   }
  function openEdit(song) {
@@ -297,6 +477,8 @@ export default function NextUp() {
       categories: [...(song.categories || [])],
       link: song.link || "",
       duration: song.duration ? formatDuration(song.duration) : "",
+      practicingToday: isPracticingToday(song.id),
+      youtubeLink: song.youtubeLink || "",
     });
   }
 
@@ -330,12 +512,15 @@ export default function NextUp() {
         categories: editForm.categories,
         link: editForm.link.trim() || "",
         duration: parseDuration(editForm.duration),
+        youtubeLink: editForm.youtubeLink.trim() || "",
       };
       return prev.map((s) => {
         const withoutSong = s.songs.filter((sg) => sg.id !== editingId);
         return s.name === editForm.session ? { ...s, songs: [...withoutSong, updated] } : { ...s, songs: withoutSong };
       });
     });
+    if (editForm.practicingToday) addSongToTodayEvent(editingId);
+    else removeSongFromTodayEvent(editingId);
     closeEdit();
   }
 
@@ -408,6 +593,55 @@ export default function NextUp() {
           const current = JSON.stringify(sessionsRef.current);
           if (incoming === current) return;
           setSessions(payload.new.data);
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  // Load calendar events once when the app first opens.
+  useEffect(() => {
+    let active = true;
+    async function loadEvents() {
+      const { data, error } = await supabase
+        .from("nextup_state")
+        .select("data")
+        .eq("id", EVENTS_ROW_ID)
+        .maybeSingle();
+      if (!active) return;
+      if (!error && data && data.data) {
+        setEvents(data.data);
+      }
+      setEventsLoaded(true);
+    }
+    loadEvents();
+    return () => { active = false; };
+  }, []);
+
+  // Push event changes to Supabase (debounced).
+  useEffect(() => {
+    if (!eventsLoaded) return;
+    const timeout = setTimeout(() => {
+      supabase.from("nextup_state").upsert({ id: EVENTS_ROW_ID, data: events }).then(({ error }) => {
+        if (error) setSyncError("Couldn't save your last change to the shared database.");
+      });
+    }, 350);
+    return () => clearTimeout(timeout);
+  }, [events, eventsLoaded]);
+
+  // Pick up event changes made from other devices/tabs in near real time.
+  useEffect(() => {
+    const channel = supabase
+      .channel("nextup_events_changes")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "nextup_state", filter: `id=eq.${EVENTS_ROW_ID}` },
+        (payload) => {
+          if (!payload.new || !payload.new.data) return;
+          const incoming = JSON.stringify(payload.new.data);
+          const current = JSON.stringify(eventsRef.current);
+          if (incoming === current) return;
+          setEvents(payload.new.data);
         }
       )
       .subscribe();
@@ -993,6 +1227,9 @@ html, body {
         .modal {
           width: 100%;
           max-width: 380px;
+          max-height: calc(100vh - 40px);
+          overflow-y: auto;
+          -webkit-overflow-scrolling: touch;
           background: var(--bg-alt);
           border: 1px solid var(--card-line);
           border-radius: 16px;
@@ -1001,7 +1238,13 @@ html, body {
           flex-direction: column;
           gap: 4px;
           box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+          scrollbar-width: thin;
+          scrollbar-color: var(--card-line) transparent;
         }
+        .modal::-webkit-scrollbar { width: 6px; }
+        .modal::-webkit-scrollbar-track { background: transparent; }
+        .modal::-webkit-scrollbar-thumb { background: var(--card-line); border-radius: 999px; }
+        .modal::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); }
         .modal-head {
           display: flex;
           justify-content: space-between;
@@ -1058,8 +1301,18 @@ html, body {
           display: flex;
           align-items: center;
           justify-content: flex-end;
-          gap: 10px;
-          margin-top: 18px;
+          gap: 8px;
+          margin-top: 14px;
+          padding: 10px 0 2px;
+          position: sticky;
+          bottom: 0;
+          background: var(--bg-alt);
+        }
+        .modal-actions .btn-primary,
+        .modal-actions .btn-ghost,
+        .modal-actions .btn-danger {
+          padding: 9px 16px;
+          font-size: 13px;
         }
 
         @media (max-width: 600px) {
@@ -1086,6 +1339,43 @@ html, body {
           text-decoration: none;
         }
         .lyrics-link:hover { text-decoration: underline; }
+        .play-link {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          margin-top: 8px;
+          margin-left: 12px;
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--amber);
+          background: none;
+          border: none;
+          cursor: pointer;
+          padding: 0;
+          font-family: inherit;
+        }
+        .play-link:hover { text-decoration: underline; }
+        .yt-embed-wrap {
+          margin-top: 12px;
+          border-radius: 10px;
+          overflow: hidden;
+          position: relative;
+          width: 100%;
+          aspect-ratio: 16 / 9;
+          background: #000;
+        }
+        .yt-embed-wrap iframe {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          border: 0;
+        }
+        .ticket-embed {
+          margin: -4px 0 10px;
+          max-width: 480px;
+        }
+        .play-btn { color: var(--amber); }
         .last-practiced {
           margin-top: 6px;
           font-family: 'JetBrains Mono', monospace;
@@ -1155,6 +1445,146 @@ html, body {
         .gig-title { font-size: 18px; font-weight: 600; }
         .gig-sub { font-size: 13px; color: var(--ink-dim); margin-top: 2px; }
 
+        /* Queue / Calendar view switcher */
+        .topbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .btn-add-ghost {
+          background: transparent;
+          color: var(--amber);
+          border: 1px solid var(--amber-dim, rgba(240,180,41,0.4));
+        }
+        .btn-add-ghost:hover { background: rgba(240,180,41,0.1); }
+        .view-tabs {
+          display: flex;
+          gap: 6px;
+          margin-bottom: 14px;
+        }
+        .view-tab {
+          padding: 7px 16px;
+          border-radius: 8px;
+          font-size: 12.5px;
+          font-weight: 600;
+          color: var(--ink-dim);
+          border: 1px solid var(--card-line);
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+        .view-tab:hover { color: var(--ink); }
+        .view-tab.active {
+          color: var(--bg);
+          background: var(--amber);
+          border-color: var(--amber);
+        }
+
+        /* Calendar / upcoming events list */
+        .calendar-view { margin-top: 4px; }
+        .event-row {
+          display: flex;
+          align-items: flex-start;
+          gap: 14px;
+          padding: 14px 12px;
+          border: 1px solid var(--card-line);
+          border-radius: 12px;
+          margin-bottom: 10px;
+          background: var(--card-bg);
+        }
+        .event-row.past { opacity: 0.5; }
+        .event-actions { display: flex; flex-direction: column; gap: 6px; }
+        .event-date {
+          flex-shrink: 0;
+          width: 48px;
+          text-align: center;
+          font-family: 'Bebas Neue', sans-serif;
+        }
+        .event-day { font-size: 24px; line-height: 1; color: var(--ink); }
+        .event-month { font-size: 11px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+        .event-body { flex: 1; min-width: 0; }
+        .event-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .event-type-badge {
+          font-size: 10px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          padding: 3px 8px;
+          border-radius: 999px;
+        }
+        .event-type-badge.practice { background: rgba(126,200,227,0.14); color: #7ec8e3; border: 1px solid rgba(126,200,227,0.4); }
+        .event-type-badge.gig { background: rgba(240,180,41,0.14); color: #f0b429; border: 1px solid rgba(240,180,41,0.4); }
+        .event-title { font-size: 15px; font-weight: 600; color: var(--ink); }
+        .event-sub { font-size: 12px; color: var(--ink-dim); margin-top: 3px; }
+        .event-songs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .event-song-pill {
+          font-size: 11px;
+          padding: 3px 9px;
+          border-radius: 999px;
+          background: var(--card-line);
+          color: var(--ink-dim);
+        }
+        .event-song-pill.has-link {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          text-decoration: none;
+          background: rgba(240,180,41,0.14);
+          color: #f0b429;
+          border: 1px solid rgba(240,180,41,0.4);
+          cursor: pointer;
+        }
+        .event-song-pill.has-link:hover { background: rgba(240,180,41,0.22); }
+
+        /* Song picker inside the Add Event modal */
+        .event-song-picker {
+          max-height: 220px;
+          overflow-y: auto;
+          border: 1px solid var(--card-line);
+          border-radius: 10px;
+          padding: 6px;
+          margin-bottom: 4px;
+        }
+        .event-song-option {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 7px 8px;
+          border-radius: 8px;
+          font-size: 13px;
+          cursor: pointer;
+        }
+        .event-song-option:hover { background: var(--card-line); }
+        .event-song-option.active { color: var(--ink); }
+        .event-song-artist { color: var(--ink-faint); font-size: 11.5px; }
+        .event-song-link-dot { color: var(--amber); margin-left: 5px; vertical-align: middle; }
+        .event-song-empty { padding: 10px 8px; font-size: 12.5px; color: var(--ink-faint); }
+        .field-check {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 13px;
+          color: var(--ink-dim);
+          margin: 4px 0 10px;
+          cursor: pointer;
+          user-select: none;
+        }
+        .field-check input[type="checkbox"] {
+          width: 15px;
+          height: 15px;
+          accent-color: var(--amber);
+          cursor: pointer;
+        }
+        .today-badge {
+          display: inline-flex;
+          align-items: center;
+          font-size: 10px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          padding: 2px 7px;
+          border-radius: 999px;
+          background: rgba(240,180,41,0.14);
+          color: #f0b429;
+          border: 1px solid rgba(240,180,41,0.4);
+          margin-left: 6px;
+        }
+
         @media print {
           body * { visibility: hidden; }
           .gig-overlay, .gig-overlay * { visibility: visible; }
@@ -1173,11 +1603,27 @@ html, body {
               {syncError && ` · ${syncError}`}
             </div>
           </div>
-          <button className="btn-add" onClick={() => setShowAdd(true)}>
-            <Plus size={15} strokeWidth={2.5} /> Add Song
-          </button>
+          <div className="topbar-actions">
+            <button className="btn-add" onClick={() => setShowAdd(true)}>
+              <Plus size={15} strokeWidth={2.5} /> Add Song
+            </button>
+            <button className="btn-add btn-add-ghost" onClick={() => openAddEvent()}>
+              <CalendarPlus size={15} strokeWidth={2.5} /> Add Event
+            </button>
+          </div>
         </div>
 
+        <div className="view-tabs">
+          <div className={"view-tab" + (view === "queue" ? " active" : "")} onClick={() => setView("queue")}>
+            Queue
+          </div>
+          <div className={"view-tab" + (view === "calendar" ? " active" : "")} onClick={() => setView("calendar")}>
+            Calendar
+          </div>
+        </div>
+
+        {view === "queue" && (
+        <>
         <div className="tabs">
           <div
             className={"tab" + (activeSession === "all" ? " active" : "")}
@@ -1201,7 +1647,10 @@ html, body {
           {nextSong ? (
             <>
               <div className="eyebrow"><span className="rec-dot" />Now Practicing</div>
-              <h1 className="hero-title">{nextSong.title}</h1>
+              <h1 className="hero-title">
+                {nextSong.title}
+                {isPracticingToday(nextSong.id) && <span className="today-badge">Today</span>}
+              </h1>
               <div className="hero-artist">{nextSong.artist}</div>
               {nextSong.singer && <div className="hero-singer">Sung by {nextSong.singer}</div>}
               <div className="hero-meta">
@@ -1224,6 +1673,21 @@ html, body {
                 <a className="lyrics-link" href={nextSong.link} target="_blank" rel="noreferrer">
                   <Link2 size={13} strokeWidth={2.2} /> Lyrics / Chords
                 </a>
+              )}
+              {nextSong.youtubeLink && (
+                <button className="play-link" onClick={() => togglePlay(nextSong.id)}>
+                  <Play size={13} strokeWidth={2.2} fill="currentColor" /> {playingId === nextSong.id ? "Hide Player" : "Play Reference"}
+                </button>
+              )}
+              {playingId === nextSong.id && getYouTubeEmbedUrl(nextSong.youtubeLink) && (
+                <div className="yt-embed-wrap">
+                  <iframe
+                    src={getYouTubeEmbedUrl(nextSong.youtubeLink)}
+                    title="Reference track"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                  />
+                </div>
               )}
               <div className="hero-actions">
                 <button
@@ -1333,9 +1797,9 @@ html, body {
             const st = STATUS_STYLE[song.status];
             const isChecked = selected.has(song.id);
             return (
+              <React.Fragment key={song.id}>
               <div
                 className={"ticket" + (isChecked ? " checked" : "")}
-                key={song.id}
                 draggable
                 onDragStart={() => (dragIdRef.current = song.id)}
                 onDragOver={(e) => e.preventDefault()}
@@ -1360,6 +1824,7 @@ html, body {
                 <div className="ticket-body" onClick={() => pickAsNext(song.id)} title="Click to practice this next">
                   <div className="ticket-title">
                     {song.title}
+                    {isPracticingToday(song.id) && <span className="today-badge">Today</span>}
                     {song.link && (
                       <a
                         href={song.link}
@@ -1411,15 +1876,118 @@ html, body {
                 </span>
                 <span
                   className="edit-btn"
+                  onClick={(e) => { e.stopPropagation(); quickAddToCalendar(song.id); }}
+                  title="Add to calendar"
+                >
+                  <CalendarPlus size={13} strokeWidth={2.2} />
+                </span>
+                {song.youtubeLink && (
+                  <span
+                    className="edit-btn play-btn"
+                    onClick={(e) => { e.stopPropagation(); togglePlay(song.id); }}
+                    title="Play reference track"
+                  >
+                    <Play size={13} strokeWidth={2.2} fill="currentColor" />
+                  </span>
+                )}
+                <span
+                  className="edit-btn"
                   onClick={(e) => { e.stopPropagation(); openEdit(song); }}
                   title="Edit song"
                 >
                   <Pencil size={13} strokeWidth={2.2} />
                 </span>
               </div>
+              {playingId === song.id && getYouTubeEmbedUrl(song.youtubeLink) && (
+                <div className="yt-embed-wrap ticket-embed">
+                  <iframe
+                    src={getYouTubeEmbedUrl(song.youtubeLink)}
+                    title="Reference track"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                  />
+                </div>
+              )}
+              </React.Fragment>
             );
           })}
         </div>
+        </>
+        )}
+
+        {view === "calendar" && (
+          <div className="calendar-view">
+            <div className="controls">
+              <input
+                className="search"
+                placeholder="Search song, event, or location…"
+                value={calendarSearch}
+                onChange={(e) => setCalendarSearch(e.target.value)}
+              />
+            </div>
+            <div className="section-label-row">
+              <div className="section-label">Upcoming ({upcomingEvents.length})</div>
+            </div>
+            {upcomingEvents.length === 0 && (
+              <div className="empty">
+                {calendarSearch.trim() ? "No events match your search." : "No events yet. Add a practice day or a gig to get started."}
+              </div>
+            )}
+            {upcomingEvents.map((ev) => {
+              const isPast = ev.date < todayStr;
+              const evSongs = allSongs.filter((s) => ev.songIds.includes(s.id));
+              return (
+                <div className={"event-row" + (isPast ? " past" : "")} key={ev.id}>
+                  <div className="event-date">
+                    <div className="event-day">{new Date(ev.date + "T00:00:00").getDate()}</div>
+                    <div className="event-month">
+                      {new Date(ev.date + "T00:00:00").toLocaleDateString(undefined, { month: "short" })}
+                    </div>
+                  </div>
+                  <div className="event-body">
+                    <div className="event-top">
+                      <span className={"event-type-badge " + ev.type.toLowerCase()}>{ev.type}</span>
+                      <span className="event-title">{ev.title}</span>
+                    </div>
+                    <div className="event-sub">
+                      {formatEventDate(ev.date)}
+                      {ev.location && ` · ${ev.location}`}
+                      {" · "}{evSongs.length} song{evSongs.length !== 1 ? "s" : ""}
+                    </div>
+                    {evSongs.length > 0 && (
+                      <div className="event-songs">
+                        {evSongs.map((s) =>
+                          s.link ? (
+                            <a
+                              href={s.link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="event-song-pill has-link"
+                              key={s.id}
+                              title="Open lyrics / chords"
+                            >
+                              <Link2 size={11} strokeWidth={2.2} /> {s.title}
+                            </a>
+                          ) : (
+                            <span className="event-song-pill" key={s.id}>{s.title}</span>
+                          )
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="event-actions">
+                    <span className="edit-btn" onClick={() => openEditEvent(ev)} title="Edit event">
+                      <Pencil size={13} strokeWidth={2.2} />
+                    </span>
+                    <span className="edit-btn" onClick={() => deleteEvent(ev.id)} title="Delete event">
+                      <Trash2 size={13} strokeWidth={2.2} />
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {selected.size > 0 && (
@@ -1515,6 +2083,13 @@ html, body {
               onChange={(e) => setForm((f) => ({ ...f, link: e.target.value }))}
               placeholder="https://…"
             />
+            <label className="field-label">YouTube Link (optional)</label>
+            <input
+              className="field"
+              value={form.youtubeLink}
+              onChange={(e) => setForm((f) => ({ ...f, youtubeLink: e.target.value }))}
+              placeholder="https://youtube.com/watch?v=…"
+            />
             <label className="field-label">Duration (optional)</label>
             <input
               className="field"
@@ -1522,6 +2097,14 @@ html, body {
               onChange={(e) => setForm((f) => ({ ...f, duration: e.target.value }))}
               placeholder="mm:ss, e.g. 3:45"
             />
+            <label className="field-check">
+              <input
+                type="checkbox"
+                checked={form.practicingToday}
+                onChange={(e) => setForm((f) => ({ ...f, practicingToday: e.target.checked }))}
+              />
+              Practicing today
+            </label>
             <label className="field-label">Setlist (optional)</label>
             <div className="field-cats">
               {CATEGORIES.map((c) => (
@@ -1628,6 +2211,13 @@ html, body {
               onChange={(e) => setEditForm((f) => ({ ...f, link: e.target.value }))}
               placeholder="https://…"
             />
+            <label className="field-label">YouTube Link (optional)</label>
+            <input
+              className="field"
+              value={editForm.youtubeLink}
+              onChange={(e) => setEditForm((f) => ({ ...f, youtubeLink: e.target.value }))}
+              placeholder="https://youtube.com/watch?v=…"
+            />
             <label className="field-label">Duration (optional)</label>
             <input
               className="field"
@@ -1635,6 +2225,14 @@ html, body {
               onChange={(e) => setEditForm((f) => ({ ...f, duration: e.target.value }))}
               placeholder="mm:ss, e.g. 3:45"
             />
+            <label className="field-check">
+              <input
+                type="checkbox"
+                checked={editForm.practicingToday}
+                onChange={(e) => setEditForm((f) => ({ ...f, practicingToday: e.target.checked }))}
+              />
+              Practicing today
+            </label>
             <label className="field-label">Setlist (optional)</label>
             <div className="field-cats">
               {CATEGORIES.map((c) => (
@@ -1658,6 +2256,160 @@ html, body {
               </button>
               <div style={{ flex: 1 }} />
               <button type="button" className="btn-ghost" onClick={closeEdit}>Cancel</button>
+              <button type="submit" className="btn-primary">Save Changes</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {showAddEvent && (
+        <div className="modal-backdrop" onClick={() => setShowAddEvent(false)}>
+          <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={addEvent}>
+            <div className="modal-head">
+              <span>Add Event</span>
+              <span className="modal-close" onClick={() => setShowAddEvent(false)}><X size={16} /></span>
+            </div>
+            <div className="field-row">
+              <div style={{ flex: 1 }}>
+                <label className="field-label">Date</label>
+                <input
+                  className="field"
+                  type="date"
+                  value={eventForm.date}
+                  onChange={(e) => setEventForm((f) => ({ ...f, date: e.target.value }))}
+                  required
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="field-label">Type</label>
+                <select
+                  className="field"
+                  value={eventForm.type}
+                  onChange={(e) => setEventForm((f) => ({ ...f, type: e.target.value }))}
+                >
+                  <option value="Practice">Practice</option>
+                  <option value="Gig">Gig</option>
+                </select>
+              </div>
+            </div>
+            <label className="field-label">Title (optional)</label>
+            <input
+              className="field"
+              value={eventForm.title}
+              onChange={(e) => setEventForm((f) => ({ ...f, title: e.target.value }))}
+              placeholder="e.g. Full band rehearsal"
+            />
+            <label className="field-label">Location (optional)</label>
+            <input
+              className="field"
+              value={eventForm.location}
+              onChange={(e) => setEventForm((f) => ({ ...f, location: e.target.value }))}
+              placeholder="e.g. Studio 3, or the venue name"
+            />
+            <label className="field-label">Songs (optional)</label>
+            <input
+              className="field"
+              value={eventSongSearch}
+              onChange={(e) => setEventSongSearch(e.target.value)}
+              placeholder="Search song or artist…"
+              style={{ marginBottom: "8px" }}
+            />
+            <div className="event-song-picker">
+              {eventSongOptions.length === 0 && <div className="event-song-empty">No songs match.</div>}
+              {eventSongOptions.map((s) => (
+                <div
+                  key={s.id}
+                  className={"event-song-option" + (eventForm.songIds.includes(s.id) ? " active" : "")}
+                  onClick={() => toggleEventSong(s.id)}
+                >
+                  <span className={"checkbox" + (eventForm.songIds.includes(s.id) ? " on" : "")}>
+                    {eventForm.songIds.includes(s.id) && <Check size={11} strokeWidth={3} />}
+                  </span>
+                  <span>{s.title} <span className="event-song-artist">· {s.artist}</span>{s.link && <Link2 size={10} strokeWidth={2.2} className="event-song-link-dot" />}</span>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn-ghost" onClick={() => setShowAddEvent(false)}>Cancel</button>
+              <button type="submit" className="btn-primary">Add Event</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {editEventForm && (
+        <div className="modal-backdrop" onClick={closeEditEvent}>
+          <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={saveEditEvent}>
+            <div className="modal-head">
+              <span>Edit Event</span>
+              <span className="modal-close" onClick={closeEditEvent}><X size={16} /></span>
+            </div>
+            <div className="field-row">
+              <div style={{ flex: 1 }}>
+                <label className="field-label">Date</label>
+                <input
+                  className="field"
+                  type="date"
+                  value={editEventForm.date}
+                  onChange={(e) => setEditEventForm((f) => ({ ...f, date: e.target.value }))}
+                  required
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="field-label">Type</label>
+                <select
+                  className="field"
+                  value={editEventForm.type}
+                  onChange={(e) => setEditEventForm((f) => ({ ...f, type: e.target.value }))}
+                >
+                  <option value="Practice">Practice</option>
+                  <option value="Gig">Gig</option>
+                </select>
+              </div>
+            </div>
+            <label className="field-label">Title (optional)</label>
+            <input
+              className="field"
+              value={editEventForm.title}
+              onChange={(e) => setEditEventForm((f) => ({ ...f, title: e.target.value }))}
+              placeholder="e.g. Full band rehearsal"
+            />
+            <label className="field-label">Location (optional)</label>
+            <input
+              className="field"
+              value={editEventForm.location}
+              onChange={(e) => setEditEventForm((f) => ({ ...f, location: e.target.value }))}
+              placeholder="e.g. Studio 3, or the venue name"
+            />
+            <label className="field-label">Songs (optional)</label>
+            <input
+              className="field"
+              value={eventSongSearch}
+              onChange={(e) => setEventSongSearch(e.target.value)}
+              placeholder="Search song or artist…"
+              style={{ marginBottom: "8px" }}
+            />
+            <div className="event-song-picker">
+              {eventSongOptions.length === 0 && <div className="event-song-empty">No songs match.</div>}
+              {eventSongOptions.map((s) => (
+                <div
+                  key={s.id}
+                  className={"event-song-option" + (editEventForm.songIds.includes(s.id) ? " active" : "")}
+                  onClick={() => toggleEditEventSong(s.id)}
+                >
+                  <span className={"checkbox" + (editEventForm.songIds.includes(s.id) ? " on" : "")}>
+                    {editEventForm.songIds.includes(s.id) && <Check size={11} strokeWidth={3} />}
+                  </span>
+                  <span>{s.title} <span className="event-song-artist">· {s.artist}</span>{s.link && <Link2 size={10} strokeWidth={2.2} className="event-song-link-dot" />}</span>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn-danger" onClick={() => { deleteEvent(editingEventId); closeEditEvent(); }}>
+                <Trash2 size={13} strokeWidth={2.2} /> Delete
+              </button>
+              <div style={{ flex: 1 }} />
+              <button type="button" className="btn-ghost" onClick={closeEditEvent}>Cancel</button>
               <button type="submit" className="btn-primary">Save Changes</button>
             </div>
           </form>
