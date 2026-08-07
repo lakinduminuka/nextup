@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
-import { Plus, X, Check, Pencil, Trash2, GripVertical, Link2, Printer, CalendarPlus, Play, Settings, Loader2, Wand2, Lock } from "lucide-react";
+import { Plus, X, Check, Pencil, Trash2, GripVertical, Link2, Printer, CalendarPlus, Play, Settings, Loader2, Wand2, Lock, Users, UserCheck, Radio, History, Sparkles } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 // Every browser/device shares this single row in the "nextup_state" table.
@@ -7,31 +7,124 @@ const STATE_ROW_ID = 1;
 // Calendar events (practice days / gigs) are stored in a second row so they
 // sync independently of the song library.
 const EVENTS_ROW_ID = 2;
+// Band roster + per-event attendance marks are stored in a third row so
+// they sync independently of the song library and the calendar.
+const MEMBERS_ROW_ID = 3;
+// Presence (who's currently logged in, on which device) plus a running
+// login-history log are stored in a fourth row, so anyone can see who's
+// online and the super admin can review a log of past visits.
+const SESSIONS_ROW_ID = 4;
 
-// Shared passcode for band members. Change this to whatever code you hand
-// out to the band — anyone who enters it correctly is remembered as a
-// verified user on that browser (via localStorage), so they won't be asked
-// again on that device. This is a lightweight door, not real security: the
-// code lives in this file, which the browser downloads, so treat it as a
-// "keep casual visitors out" gate rather than protection for sensitive data.
+// Two-tier access:
+//  - SUPER_ADMIN_PASSCODE is the one code below, hardcoded in this file.
+//    Anyone who enters it gets full admin rights: create/edit/delete band
+//    members and take attendance, on top of everything else in the app.
+//  - Every band member gets their OWN personal passcode instead, stored on
+//    their `member` record (synced via Supabase, see MEMBERS_ROW_ID below)
+//    rather than in source. Entering a member's passcode logs the app in
+//    "as" that member with everyday access (queue, calendar, viewing
+//    attendance stats) but WITHOUT permission to manage members or mark
+//    attendance — those actions are admin-only and hidden/blocked for
+//    members.
+// Whichever passcode is entered, the device remembers who's logged in (via
+// localStorage) so people aren't asked again on that browser. This is a
+// lightweight door, not real security: the admin code lives in this file,
+// which the browser downloads, so treat it as a "keep casual visitors and
+// well-meaning members out of admin actions" gate rather than protection
+// for sensitive data.
 //
-// Changing this value automatically signs out every device: what's stored
-// in localStorage is a checksum of the passcode that unlocked it, not just
-// a plain "true" — so as soon as this constant changes, the old checksum
-// stops matching and everyone is asked to re-enter the (new) passcode.
-const APP_PASSCODE = "Lumos2026$";
-const PASSCODE_STORAGE_KEY = "nextup_verified_code";
+// Changing SUPER_ADMIN_PASSCODE automatically signs out every device that
+// was logged in as admin (the stored checksum stops matching). Changing or
+// removing a member's passcode (via Manage Members) similarly signs that
+// member out everywhere the next time their data syncs.
+const SUPER_ADMIN_PASSCODE = "Lumos2026$";
+const AUTH_STORAGE_KEY = "nextup_auth";
+// Persistent per-browser id (not tied to who's logged in) used to tell
+// devices apart in the "who's online" list.
+const DEVICE_ID_KEY = "nextup_device_id";
+// How often an unlocked device checks in, and how stale a check-in can get
+// before that device drops off the "currently online" list.
+const HEARTBEAT_MS = 60 * 1000;
+const ONLINE_WINDOW_MS = 4 * 60 * 1000;
 
 // Small non-cryptographic checksum — good enough to detect "does the
-// passcode stored on this device match the current APP_PASSCODE", not
-// meant to be secure (see note above: the real passcode is visible in
-// this file's source regardless).
+// passcode stored on this device still match the live passcode", not
+// meant to be secure (see note above: the admin code is visible in this
+// file's source regardless, and member codes are visible to whoever holds
+// them).
 function passcodeChecksum(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     hash = (hash * 31 + str.charCodeAt(i)) | 0;
   }
   return hash.toString(36);
+}
+
+function loadStoredAuth() {
+  try {
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+// A stable id for this browser, so the presence list can tell two devices
+// apart even if they're logged in as the same person.
+function getDeviceId() {
+  try {
+    let id = localStorage.getItem(DEVICE_ID_KEY);
+    if (!id) {
+      id = "dev_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      localStorage.setItem(DEVICE_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return "dev_" + Math.random().toString(36).slice(2, 10);
+  }
+}
+
+// Cheap, dependency-free label from the user agent — just enough to tell
+// devices apart at a glance ("Chrome on Windows" vs "Safari on iPhone"),
+// not a real device-detection library.
+function guessDeviceLabel() {
+  if (typeof navigator === "undefined") return "Unknown device";
+  const ua = navigator.userAgent || "";
+  let os = "Unknown device";
+  if (/iPhone/i.test(ua)) os = "iPhone";
+  else if (/iPad/i.test(ua)) os = "iPad";
+  else if (/Android/i.test(ua)) os = "Android";
+  else if (/Mac OS X/i.test(ua)) os = "Mac";
+  else if (/Windows/i.test(ua)) os = "Windows";
+  else if (/Linux/i.test(ua)) os = "Linux";
+  let browser = "Browser";
+  if (/Edg\//i.test(ua)) browser = "Edge";
+  else if (/OPR\//i.test(ua)) browser = "Opera";
+  else if (/CriOS\//i.test(ua)) browser = "Chrome";
+  else if (/Chrome\//i.test(ua) && !/Chromium/i.test(ua)) browser = "Chrome";
+  else if (/Firefox\//i.test(ua)) browser = "Firefox";
+  else if (/Safari\//i.test(ua)) browser = "Safari";
+  return `${browser} on ${os}`;
+}
+
+// Fine-grained "how recently" for the presence list (minutes/hours), as
+// opposed to the day-granularity timeAgo() used elsewhere for practice dates.
+function timeAgoShort(ts) {
+  if (!ts) return "—";
+  const diff = Date.now() - ts;
+  if (diff < 45 * 1000) return "just now";
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+// Full local date/time for the admin-facing visit log.
+function formatVisitTime(ts) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 const RAW_SESSIONS = [{"name": "First Session", "songs": [{"id": 0, "title": "Oba dutu e mul dine", "artist": "Gypsies", "key": "F", "status": "Practiced", "remark": "Tranceposed to G after last Chorus"}, {"id": 1, "title": "Sanasennam Ma", "artist": "Senaka Batagoda", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 2, "title": "Dagakara Hadakari", "artist": "Various Artists", "key": "Bb", "status": "Need to Practice", "remark": null}, {"id": 3, "title": "Unmadini Medley", "artist": "BNS", "key": "C", "status": "Practiced Once", "remark": null}, {"id": 4, "title": "Perfect", "artist": "Ed Sheeran", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 5, "title": "Hitha Hiri Watunado", "artist": "Bachi Susan", "key": "B", "status": "Practiced Once", "remark": null}, {"id": 6, "title": "Tharuka Niwa Dura", "artist": "Ajith Bandara", "key": "Em", "status": "Practiced Once", "remark": null}, {"id": 7, "title": "Soduru Atheethaya", "artist": "TM Jayarathne", "key": "F", "status": "Need to Practice", "remark": null}, {"id": 8, "title": "Anganawo", "artist": "Rookantha Gunathilake", "key": "F", "status": "Practiced Once", "remark": null}, {"id": 9, "title": "Atha Ran Wiman", "artist": "Priya Sooriayasena", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 10, "title": "Sansarini", "artist": "Yasas Madagedara", "key": "Ab", "status": "Need to Practice", "remark": null}, {"id": 11, "title": "Eka dawasaka", "artist": "Sandeep Jayalath", "key": "Ebm", "status": "Need to Practice", "remark": null}, {"id": 12, "title": "Aadaree kiyanna (Shenal)", "artist": "Piyath Rajapakse", "key": "E", "status": "Need to Practice", "remark": null}, {"id": 13, "title": "Unmada prema geeya", "artist": "BNS", "key": "C", "status": "Need to Practice", "remark": null}, {"id": 14, "title": "Thawa Dawasak", "artist": "Keerthi Pasquel", "key": "E", "status": "Need to Practice", "remark": null}, {"id": 15, "title": "Ra ahase", "artist": "Billy Fernando", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 16, "title": "Oba kamathinam Mata kiyanna", "artist": "Gypsies", "key": "F", "status": "Need to Practice", "remark": null}, {"id": 17, "title": "Raya Pahan Kala", "artist": "nadeeka jayawardana", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 18, "title": "Mandaram Kathawe", "artist": "Wasthi", "key": "Dm", "status": "Need to Practice", "remark": null}, {"id": 19, "title": "Marunu hithe", "artist": "Wasthi", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 20, "title": "Mathake Hasaral", "artist": "Dushyanth Weeraman", "key": "Bbm", "status": "Need to Practice", "remark": null}]}, {"name": "Second Session", "songs": [{"id": 21, "title": "Ran wan mal dam", "artist": "Centigratez", "key": "Dm", "status": "Need to Practice", "remark": null}, {"id": 22, "title": "Tiken Tika", "artist": "Daddy", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 23, "title": "Chandrayan Pidu", "artist": "Daddy", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 24, "title": "Sarath Sande", "artist": "Charith Abesinghe", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 25, "title": "Dasa Piyagath kala", "artist": "Clarence Wijewardana", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 26, "title": "Mal Madahasa Medley", "artist": "Various Artist", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 27, "title": "Sili Sili Seethala", "artist": "Raj Seneviratne", "key": "Bb", "status": "Need to Practice", "remark": null}, {"id": 28, "title": "Nurawani", "artist": "Wasthi", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 29, "title": "Rahasin Awith", "artist": "Sureni De mel", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 30, "title": "Malsara", "artist": "Chamara Ranawaka", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 31, "title": "Sanda Basa giya thana na", "artist": "Rookantha", "key": "Bbm", "status": "Need to Practice", "remark": null}, {"id": 32, "title": "Api aye hamu nowena", "artist": "Sanka dineth", "key": "F#m", "status": "Need to Practice", "remark": null}, {"id": 33, "title": "Mage manik apsarawi", "artist": "Tharindu Arsecularathna", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 34, "title": "Jeththu None", "artist": "Dushyanth Weeraman", "key": "\u2014", "status": "Need to Practice", "remark": null}, {"id": 35, "title": "Nelum Wilen", "artist": "Dushyanth Weeraman", "key": "\u2014", "status": "Need to Practice", "remark": null}, {"id": 36, "title": "Ratakin eha", "artist": "Priya Sooriyasena", "key": "A", "status": "Need to Practice", "remark": null}, {"id": 37, "title": "Mathakayan Obe", "artist": "Chamara Weerasinghe", "key": "Bbm", "status": "Need to Practice", "remark": null}, {"id": 38, "title": "Ninda Noyana", "artist": "Ranindu", "key": "Ebm", "status": "Need to Practice", "remark": null}, {"id": 39, "title": "Hinahenne mang", "artist": "Ranindu", "key": "Cm", "status": "Need to Practice", "remark": null}]}, {"name": "Third Session", "songs": [{"id": 40, "title": "Sumihiri pane", "artist": "Desmond De Silva", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 41, "title": "Rookantha Medley", "artist": "Unknown", "key": "\u2014", "status": "Need to Practice", "remark": null}, {"id": 42, "title": "Sawandari", "artist": "Sangeeth Wijesuriya", "key": "G", "status": "Need to Practice", "remark": null}, {"id": 43, "title": "Mata sithanna ba Medley", "artist": "Unknown", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 44, "title": "Radio Active/Roo Sara", "artist": "Unknown", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 45, "title": "Thaththa mata anapu tokka", "artist": "Gypsies", "key": "Eb", "status": "Need to Practice", "remark": null}, {"id": 46, "title": "Ulath ekai Pilath ekai", "artist": "Rookantha", "key": "D", "status": "Need to Practice", "remark": null}, {"id": 47, "title": "Layla", "artist": "Marianz", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 48, "title": "Bombe Motai", "artist": "Wasthi", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 49, "title": "Sudu Ammiya", "artist": "Wasthi", "key": "Em", "status": "Need to Practice", "remark": null}, {"id": 50, "title": "Yami Pain Yami", "artist": "Wasthi", "key": "Bm", "status": "Need to Practice", "remark": null}, {"id": 51, "title": "Ingi Marana Tharu Rana", "artist": "K.Sujeewa", "key": "Ebm", "status": "Need to Practice", "remark": null}, {"id": 52, "title": "Me Diaganthaye", "artist": "Rookantha Gunathilaka", "key": "E", "status": "Need to Practice", "remark": null}, {"id": 53, "title": "Thrailoka", "artist": "Shane Zing", "key": "Am", "status": "Need to Practice", "remark": null}, {"id": 54, "title": "Sanwedana", "artist": "Shane Zing", "key": "B", "status": "Need to Practice", "remark": null}]}];
@@ -53,6 +146,24 @@ const LANGUAGE_STYLE = {
   English: { bg: "rgba(126,200,227,0.14)", border: "rgba(126,200,227,0.4)", text: "#7ec8e3" },
   Hindi: { bg: "rgba(240,180,41,0.14)", border: "rgba(240,180,41,0.4)", text: "#f0b429" },
 };
+
+const INSTRUMENTS = ["Vocals", "Lead Guitar", "Bass Guitar", "Rhythm Guitar", "Drums", "Keys", "Percussion"];
+const INSTRUMENT_STYLE = {
+  Vocals: { bg: "rgba(224,114,156,0.14)", border: "rgba(224,114,156,0.4)", text: "#e0729c" },
+  "Lead Guitar": { bg: "rgba(240,180,41,0.14)", border: "rgba(240,180,41,0.4)", text: "#f0b429" },
+  "Bass Guitar": { bg: "rgba(126,200,227,0.14)", border: "rgba(126,200,227,0.4)", text: "#7ec8e3" },
+  "Rhythm Guitar": { bg: "rgba(217,130,75,0.14)", border: "rgba(217,130,75,0.4)", text: "#d9824b" },
+  Drums: { bg: "rgba(232,96,76,0.14)", border: "rgba(232,96,76,0.4)", text: "#e8604c" },
+  Keys: { bg: "rgba(178,141,251,0.14)", border: "rgba(178,141,251,0.4)", text: "#b28dfb" },
+  Percussion: { bg: "rgba(95,184,156,0.14)", border: "rgba(95,184,156,0.4)", text: "#5fb89c" },
+};
+// Fallback swatch for any instrument value that predates the current
+// INSTRUMENTS list (e.g. synced from an older device), so rendering never
+// crashes on an unrecognized tag.
+const DEFAULT_INSTRUMENT_STYLE = { bg: "rgba(155,161,171,0.14)", border: "rgba(155,161,171,0.4)", text: "#9ba1ab" };
+function instrumentStyle(instr) {
+  return INSTRUMENT_STYLE[instr] || DEFAULT_INSTRUMENT_STYLE;
+}
 
 const STATUS_ORDER = ["Need to Practice", "Practiced Once", "Practiced"];
 const STATUS_STYLE = {
@@ -147,28 +258,133 @@ function flatten(sessions) {
 }
 
 export default function NextUp() {
-  const [verified, setVerified] = useState(() => {
-    try { return localStorage.getItem(PASSCODE_STORAGE_KEY) === passcodeChecksum(APP_PASSCODE); } catch { return false; }
+  // authStatus: "checking" (still resolving a stored login against synced
+  // member data) | "locked" (show the passcode form) | "unlocked".
+  // currentUser: null | { role: "admin" } | { role: "member", id, name }.
+  const [authStatus, setAuthStatus] = useState(() => {
+    const stored = loadStoredAuth();
+    if (!stored) return "locked";
+    // Admin logins can be verified immediately — no dependency on synced
+    // data — so resolve those right away and skip the "checking" flash.
+    if (stored.role === "admin" && stored.hash === passcodeChecksum(SUPER_ADMIN_PASSCODE)) {
+      return "unlocked";
+    }
+    if (stored.role === "admin") return "locked";
+    // Member logins need the roster (loaded async from Supabase) before
+    // they can be verified, so wait rather than bouncing to the login form.
+    return "checking";
+  });
+  const [currentUser, setCurrentUser] = useState(() => {
+    const stored = loadStoredAuth();
+    if (stored && stored.role === "admin" && stored.hash === passcodeChecksum(SUPER_ADMIN_PASSCODE)) {
+      return { role: "admin" };
+    }
+    return null;
   });
   const [passcodeInput, setPasscodeInput] = useState("");
   const [passcodeError, setPasscodeError] = useState(false);
+  // Name to flash in the "Let's Rock" welcome toast right after unlocking.
+  const [welcomeName, setWelcomeName] = useState(null);
+
+  const verified = authStatus === "unlocked";
+  const isAdmin = currentUser?.role === "admin";
 
   function handleUnlock(e) {
     e.preventDefault();
-    if (passcodeInput.trim() === APP_PASSCODE) {
+    const code = passcodeInput.trim();
+    if (!code) return;
+    if (code === SUPER_ADMIN_PASSCODE) {
+      const auth = { role: "admin", hash: passcodeChecksum(SUPER_ADMIN_PASSCODE) };
+      try { localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth)); } catch {}
+      setCurrentUser({ role: "admin" });
+      setAuthStatus("unlocked");
       setPasscodeError(false);
       setPasscodeInput("");
-      try { localStorage.setItem(PASSCODE_STORAGE_KEY, passcodeChecksum(APP_PASSCODE)); } catch {}
-      setVerified(true);
-    } else {
-      setPasscodeError(true);
-      setPasscodeInput("");
+      return;
     }
+    const match = membersRef.current.find((m) => m.passcode && m.passcode === code);
+    if (match) {
+      const auth = { role: "member", memberId: match.id, hash: passcodeChecksum(match.passcode) };
+      try { localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth)); } catch {}
+      setCurrentUser({ role: "member", id: match.id, name: match.name });
+      setAuthStatus("unlocked");
+      setPasscodeError(false);
+      setPasscodeInput("");
+      return;
+    }
+    setPasscodeError(true);
+    setPasscodeInput("");
   }
 
   function handleLock() {
-    try { localStorage.removeItem(PASSCODE_STORAGE_KEY); } catch {}
-    setVerified(false);
+    endSession();
+    sessionRegisteredRef.current = false;
+    try { localStorage.removeItem(AUTH_STORAGE_KEY); } catch {}
+    setCurrentUser(null);
+    setAuthStatus("locked");
+  }
+
+  // --- Presence & visit log -------------------------------------------
+  // A "who's online" list plus an append-only login history, synced through
+  // the same nextup_state table (SESSIONS_ROW_ID above). Every unlocked
+  // device registers itself under its own deviceId, checks in periodically
+  // so it doesn't go stale, and removes itself on lock. Every login also
+  // appends an entry to a log that only the super admin surface shows, for
+  // keeping an eye on who's accessing the app and when.
+  async function readSessionsRow() {
+    const { data } = await supabase.from("nextup_state").select("data").eq("id", SESSIONS_ROW_ID).maybeSingle();
+    return (data && data.data) || { active: [], log: [] };
+  }
+
+  function pruneStaleActive(list) {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000; // drop check-ins over a day old
+    return (list || []).filter((s) => s.lastSeen > cutoff);
+  }
+
+  async function registerSession(user) {
+    try {
+      const current = await readSessionsRow();
+      const now = Date.now();
+      const name = user.role === "admin" ? "Super Admin" : (user.name || "Member");
+      const entry = {
+        deviceId: deviceIdRef.current,
+        role: user.role,
+        memberId: user.role === "member" ? user.id : null,
+        name,
+        device: deviceLabelRef.current,
+        loginAt: now,
+        lastSeen: now,
+      };
+      const active = pruneStaleActive(current.active).filter((s) => s.deviceId !== deviceIdRef.current);
+      active.push(entry);
+      const log = [entry, ...(current.log || [])].slice(0, 300);
+      setActiveSessions(active);
+      setVisitLog(log);
+      await supabase.from("nextup_state").upsert({ id: SESSIONS_ROW_ID, data: { active, log } });
+    } catch {
+      // Presence tracking is a nice-to-have — never block login on it.
+    }
+  }
+
+  async function heartbeatSession() {
+    try {
+      const current = await readSessionsRow();
+      const active = pruneStaleActive(current.active);
+      const idx = active.findIndex((s) => s.deviceId === deviceIdRef.current);
+      if (idx === -1) return; // this device's entry is gone; next login will re-add it
+      active[idx] = { ...active[idx], lastSeen: Date.now() };
+      setActiveSessions(active);
+      await supabase.from("nextup_state").upsert({ id: SESSIONS_ROW_ID, data: { active, log: current.log || [] } });
+    } catch {}
+  }
+
+  async function endSession() {
+    try {
+      const current = await readSessionsRow();
+      const active = pruneStaleActive(current.active).filter((s) => s.deviceId !== deviceIdRef.current);
+      setActiveSessions(active);
+      await supabase.from("nextup_state").upsert({ id: SESSIONS_ROW_ID, data: { active, log: current.log || [] } });
+    } catch {}
   }
 
   const [sessions, setSessions] = useState(RAW_SESSIONS);
@@ -204,6 +420,43 @@ export default function NextUp() {
   const [draggingId, setDraggingId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
 
+  // Band roster, for attendance tracking.
+  const [members, setMembers] = useState([]);
+  const [membersLoaded, setMembersLoaded] = useState(false);
+  const membersRef = useRef(members);
+  const [showManageMembers, setShowManageMembers] = useState(false);
+  const [newMemberName, setNewMemberName] = useState("");
+  const [newMemberInstruments, setNewMemberInstruments] = useState([]);
+  const [newMemberPasscode, setNewMemberPasscode] = useState("");
+  const [memberFormError, setMemberFormError] = useState(null);
+  const [editingMemberId, setEditingMemberId] = useState(null);
+  const [editingMemberName, setEditingMemberName] = useState("");
+  const [editingMemberPasscode, setEditingMemberPasscode] = useState("");
+  // Which instrument dropdown is currently open — "new" for the add-member
+  // form, or a member's id for that member's row. null = all closed.
+  const [openInstrumentDropdown, setOpenInstrumentDropdown] = useState(null);
+  const instrumentDropdownRef = useRef(null);
+  const [instrumentDropdownPos, setInstrumentDropdownPos] = useState(null);
+
+  // Presence ("who's online right now") + admin-only visit log.
+  const [activeSessions, setActiveSessions] = useState([]);
+  const [visitLog, setVisitLog] = useState([]);
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [showActiveSessions, setShowActiveSessions] = useState(false);
+  const [showVisitLog, setShowVisitLog] = useState(false);
+  const deviceIdRef = useRef(getDeviceId());
+  const deviceLabelRef = useRef(guessDeviceLabel());
+  // Guards against re-registering (and re-flashing the welcome toast) every
+  // time currentUser is rebuilt as a new object with the same contents.
+  const sessionRegisteredRef = useRef(false);
+
+  // Taking attendance for a single event: attendanceEventId is the event
+  // being marked, attendanceDraft is a working copy of its attendance map
+  // ({ [memberId]: true (present) | false (absent) }, unset = unmarked)
+  // that only gets written back to `events` when Save is pressed.
+  const [attendanceEventId, setAttendanceEventId] = useState(null);
+  const [attendanceDraft, setAttendanceDraft] = useState(null);
+
   // YouTube auto-duration lookup. The API key is entered once and kept in
   // localStorage — the app never ships a key of its own.
   const [youtubeApiKey, setYoutubeApiKey] = useState(() => {
@@ -217,6 +470,44 @@ export default function NextUp() {
   useEffect(() => {
     eventsRef.current = events;
   }, [events]);
+
+  useEffect(() => {
+    membersRef.current = members;
+  }, [members]);
+
+  // Resolves (and continuously re-checks) a stored member login against the
+  // synced roster. Runs once membersLoaded flips true, and again whenever
+  // members changes — so if an admin later changes/removes this member's
+  // passcode (or deletes the member) on another device, this device signs
+  // itself out the next time it syncs, same as the admin-passcode-change
+  // behavior described above.
+  useEffect(() => {
+    const stored = loadStoredAuth();
+    if (!stored || stored.role !== "member") return;
+    if (!membersLoaded) return;
+    const m = members.find((mm) => mm.id === stored.memberId);
+    if (m && m.passcode && stored.hash === passcodeChecksum(m.passcode)) {
+      setCurrentUser({ role: "member", id: m.id, name: m.name });
+      setAuthStatus("unlocked");
+    } else {
+      try { localStorage.removeItem(AUTH_STORAGE_KEY); } catch {}
+      if (sessionRegisteredRef.current) { endSession(); sessionRegisteredRef.current = false; }
+      setCurrentUser(null);
+      setAuthStatus("locked");
+    }
+  }, [members, membersLoaded]);
+
+  // Close whichever instrument dropdown is open on an outside click.
+  useEffect(() => {
+    if (openInstrumentDropdown == null) return;
+    function handleClick(e) {
+      if (instrumentDropdownRef.current && !instrumentDropdownRef.current.contains(e.target)) {
+        setOpenInstrumentDropdown(null);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [openInstrumentDropdown]);
 
   const allSongs = useMemo(() => flatten(sessions), [sessions]);
 
@@ -260,6 +551,30 @@ export default function NextUp() {
       .filter((ev) => ev.date === todayStr && ev.note && ev.note.trim())
       .map((ev) => ({ id: ev.id, title: ev.title, note: ev.note.trim() }));
   }, [events, todayStr]);
+
+  // Past practice sessions only — attendance stats are scored against
+  // sessions that have already happened, not ones still on the calendar.
+  const practiceEvents = useMemo(
+    () => events.filter((ev) => ev.type === "Practice" && ev.date <= todayStr).sort((a, b) => a.date.localeCompare(b.date)),
+    [events, todayStr]
+  );
+
+  const attendanceStats = useMemo(() => {
+    return members
+      .map((m) => {
+        let attended = 0;
+        const missedEvents = [];
+        practiceEvents.forEach((ev) => {
+          const mark = ev.attendance ? ev.attendance[m.id] : undefined;
+          if (mark === true) attended++;
+          else if (mark === false) missedEvents.push(ev);
+        });
+        const marked = attended + missedEvents.length;
+        const pct = marked > 0 ? Math.round((attended / marked) * 100) : null;
+        return { member: m, attended, missed: missedEvents.length, unmarked: practiceEvents.length - marked, total: practiceEvents.length, pct, missedEvents };
+      })
+      .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
+  }, [members, practiceEvents]);
 
   const eventSongOptions = useMemo(() => {
     const q = eventSongSearch.trim().toLowerCase();
@@ -419,6 +734,7 @@ export default function NextUp() {
       location: eventForm.location.trim(),
       note: eventForm.note.trim(),
       songIds: eventForm.songIds,
+      attendance: {},
     };
     setEvents((prev) => [...prev, newEvent]);
     setEventForm({ date: "", type: "Practice", title: "", location: "", note: "", songIds: [] });
@@ -482,6 +798,158 @@ export default function NextUp() {
       ...f,
       songIds: f.songIds.includes(id) ? f.songIds.filter((x) => x !== id) : [...f.songIds, id],
     }));
+  }
+
+  function addMember(e) {
+    e.preventDefault();
+    if (!isAdmin) return;
+    const name = newMemberName.trim();
+    const passcode = newMemberPasscode.trim();
+    if (!name || !passcode) {
+      setMemberFormError("Name and passcode are both required.");
+      return;
+    }
+    if (passcode === SUPER_ADMIN_PASSCODE || membersRef.current.some((m) => m.passcode === passcode)) {
+      setMemberFormError("That passcode is already taken — pick a different one.");
+      return;
+    }
+    setMembers((prev) => [...prev, { id: Date.now(), name, instruments: newMemberInstruments, passcode }]);
+    setNewMemberName("");
+    setNewMemberInstruments([]);
+    setNewMemberPasscode("");
+    setMemberFormError(null);
+  }
+
+  function toggleNewMemberInstrument(instr) {
+    setNewMemberInstruments((prev) => (prev.includes(instr) ? prev.filter((i) => i !== instr) : [...prev, instr]));
+  }
+
+  function toggleMemberInstrument(memberId, instr) {
+    if (!isAdmin) return;
+    setMembers((prev) =>
+      prev.map((m) => {
+        if (m.id !== memberId) return m;
+        const current = m.instruments || [];
+        return { ...m, instruments: current.includes(instr) ? current.filter((i) => i !== instr) : [...current, instr] };
+      })
+    );
+  }
+
+  // Renders a multi-select instrument dropdown. Not a separate React
+  // component — a plain function returning JSX inline — so re-renders of
+  // the parent don't remount it and drop the open/closed state.
+  function renderInstrumentDropdown(dropdownKey, selected, onToggle) {
+    const isOpen = openInstrumentDropdown === dropdownKey;
+    return (
+      <div className="instrument-dropdown" ref={isOpen ? instrumentDropdownRef : null}>
+        <div
+          className={"instrument-dropdown-trigger" + (isOpen ? " open" : "")}
+          onClick={(e) => {
+            if (isOpen) {
+              setOpenInstrumentDropdown(null);
+              return;
+            }
+            const rect = e.currentTarget.getBoundingClientRect();
+            setInstrumentDropdownPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+            setOpenInstrumentDropdown(dropdownKey);
+          }}
+        >
+          <span className={"instrument-dropdown-value" + (selected.length ? "" : " placeholder")}>
+            {selected.length ? selected.join(", ") : "Select instrument(s)…"}
+          </span>
+          <span className={"instrument-dropdown-chevron" + (isOpen ? " open" : "")}>▾</span>
+        </div>
+        {isOpen && instrumentDropdownPos && (
+          <div
+            className="instrument-dropdown-panel"
+            style={{ position: "fixed", top: instrumentDropdownPos.top, left: instrumentDropdownPos.left, width: instrumentDropdownPos.width }}
+          >
+            {INSTRUMENTS.map((instr) => {
+              const active = selected.includes(instr);
+              return (
+                <div key={instr} className="instrument-dropdown-option" onClick={() => onToggle(instr)}>
+                  <span className={"checkbox" + (active ? " on" : "")}>
+                    {active && <Check size={11} strokeWidth={3} />}
+                  </span>
+                  <span style={active ? { color: instrumentStyle(instr).text } : undefined}>{instr}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function startEditMember(m) {
+    if (!isAdmin) return;
+    setEditingMemberId(m.id);
+    setEditingMemberName(m.name);
+    setEditingMemberPasscode(m.passcode || "");
+    setMemberFormError(null);
+  }
+
+  function saveEditMember() {
+    if (!isAdmin) { setEditingMemberId(null); return; }
+    const name = editingMemberName.trim();
+    const passcode = editingMemberPasscode.trim();
+    const id = editingMemberId;
+    if (!name || !passcode) {
+      setMemberFormError("Name and passcode are both required.");
+      return;
+    }
+    if (passcode === SUPER_ADMIN_PASSCODE || membersRef.current.some((m) => m.id !== id && m.passcode === passcode)) {
+      setMemberFormError("That passcode is already taken — pick a different one.");
+      return;
+    }
+    setEditingMemberId(null);
+    setMemberFormError(null);
+    setMembers((prev) => prev.map((m) => (m.id === id ? { ...m, name, passcode } : m)));
+  }
+
+  function deleteMember(id) {
+    if (!isAdmin) return;
+    setMembers((prev) => prev.filter((m) => m.id !== id));
+    // Also strip this member's attendance marks from every event so stale
+    // marks don't linger under a deleted member's old id.
+    setEvents((prev) =>
+      prev.map((ev) => {
+        if (!ev.attendance || !(id in ev.attendance)) return ev;
+        const rest = { ...ev.attendance };
+        delete rest[id];
+        return { ...ev, attendance: rest };
+      })
+    );
+  }
+
+  function openAttendance(ev) {
+    if (!isAdmin) return;
+    setAttendanceEventId(ev.id);
+    setAttendanceDraft({ ...(ev.attendance || {}) });
+  }
+
+  function closeAttendance() {
+    setAttendanceEventId(null);
+    setAttendanceDraft(null);
+  }
+
+  // Cycles a member's mark: unmarked -> present -> absent -> unmarked.
+  function cycleAttendance(memberId) {
+    if (!isAdmin) return;
+    setAttendanceDraft((prev) => {
+      const cur = prev[memberId];
+      const copy = { ...prev };
+      if (cur === undefined) copy[memberId] = true;
+      else if (cur === true) copy[memberId] = false;
+      else delete copy[memberId];
+      return copy;
+    });
+  }
+
+  function saveAttendance() {
+    if (!isAdmin) return;
+    setEvents((prev) => prev.map((ev) => (ev.id === attendanceEventId ? { ...ev, attendance: attendanceDraft } : ev)));
+    closeAttendance();
   }
 
   function formatEventDate(dateStr) {
@@ -861,6 +1329,124 @@ export default function NextUp() {
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
+
+  // Load the band roster once when the app first opens.
+  useEffect(() => {
+    let active = true;
+    async function loadMembers() {
+      const { data, error } = await supabase
+        .from("nextup_state")
+        .select("data")
+        .eq("id", MEMBERS_ROW_ID)
+        .maybeSingle();
+      if (!active) return;
+      if (!error && data && data.data) {
+        setMembers(data.data);
+      }
+      setMembersLoaded(true);
+    }
+    loadMembers();
+    return () => { active = false; };
+  }, []);
+
+  // Push roster changes to Supabase (debounced).
+  useEffect(() => {
+    if (!membersLoaded) return;
+    const timeout = setTimeout(() => {
+      supabase.from("nextup_state").upsert({ id: MEMBERS_ROW_ID, data: members }).then(({ error }) => {
+        if (error) setSyncError("Couldn't save your last change to the shared database.");
+      });
+    }, 350);
+    return () => clearTimeout(timeout);
+  }, [members, membersLoaded]);
+
+  // Pick up roster changes made from other devices/tabs in near real time.
+  useEffect(() => {
+    const channel = supabase
+      .channel("nextup_members_changes")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "nextup_state", filter: `id=eq.${MEMBERS_ROW_ID}` },
+        (payload) => {
+          if (!payload.new || !payload.new.data) return;
+          const incoming = JSON.stringify(payload.new.data);
+          const current = JSON.stringify(membersRef.current);
+          if (incoming === current) return;
+          setMembers(payload.new.data);
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  // Load current presence + visit log once when the app opens.
+  useEffect(() => {
+    let active = true;
+    async function loadSessions() {
+      const { data, error } = await supabase.from("nextup_state").select("data").eq("id", SESSIONS_ROW_ID).maybeSingle();
+      if (!active) return;
+      if (!error && data && data.data) {
+        setActiveSessions(pruneStaleActive(data.data.active));
+        setVisitLog(data.data.log || []);
+      } else if (!error) {
+        // Nothing in the table yet — seed it empty so future writes are updates.
+        await supabase.from("nextup_state").upsert({ id: SESSIONS_ROW_ID, data: { active: [], log: [] } });
+      }
+      setSessionsLoaded(true);
+    }
+    loadSessions();
+    return () => { active = false; };
+  }, []);
+
+  // Pick up presence/visit-log changes from other devices in near real time.
+  useEffect(() => {
+    const channel = supabase
+      .channel("nextup_sessions_changes")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "nextup_state", filter: `id=eq.${SESSIONS_ROW_ID}` },
+        (payload) => {
+          if (!payload.new || !payload.new.data) return;
+          setActiveSessions(pruneStaleActive(payload.new.data.active));
+          setVisitLog(payload.new.data.log || []);
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  // Register this device's session (and queue the welcome toast) the first
+  // time we resolve a logged-in user — whether from a fresh passcode entry
+  // or a login remembered on this device.
+  useEffect(() => {
+    if (authStatus !== "unlocked" || !currentUser) return;
+    if (sessionRegisteredRef.current) return;
+    sessionRegisteredRef.current = true;
+    registerSession(currentUser);
+    setWelcomeName(currentUser.role === "admin" ? "Super Admin" : (currentUser.name || "there"));
+  }, [authStatus, currentUser]);
+
+  // Keep this device's session looking "online" for as long as the app
+  // stays open and unlocked.
+  useEffect(() => {
+    if (authStatus !== "unlocked") return;
+    const interval = setInterval(() => { heartbeatSession(); }, HEARTBEAT_MS);
+    return () => clearInterval(interval);
+  }, [authStatus]);
+
+  // Auto-dismiss the "Let's Rock" welcome toast.
+  useEffect(() => {
+    if (!welcomeName) return;
+    const t = setTimeout(() => setWelcomeName(null), 2800);
+    return () => clearTimeout(t);
+  }, [welcomeName]);
+
+  // Sessions that count as "currently online" — a device drops off this
+  // list a few minutes after its last check-in, not the instant it's closed.
+  const onlineSessions = useMemo(() => {
+    const cutoff = Date.now() - ONLINE_WINDOW_MS;
+    return activeSessions.filter((s) => s.lastSeen >= cutoff).sort((a, b) => b.lastSeen - a.lastSeen);
+  }, [activeSessions, showActiveSessions]);
 
   useEffect(() => {
     if (heroRef.current) {
@@ -1381,6 +1967,7 @@ html, body {
         }
         .cat-chip:hover { border-color: var(--ink-faint); color: var(--ink); }
         .cat-chip.active { font-weight: 600; }
+        .cat-chip.small { padding: 3px 10px; font-size: 11px; }
 
         /* Checkbox */
         .checkbox {
@@ -1905,6 +2492,234 @@ html, body {
         }
         .event-song-pill.has-link:hover { background: rgba(240,180,41,0.22); }
 
+        /* Attendance badge on calendar event rows */
+        .attendance-row-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 10.5px;
+          font-weight: 700;
+          padding: 2px 8px;
+          border-radius: 999px;
+          background: rgba(95,184,156,0.14);
+          color: var(--green);
+          border: 1px solid rgba(95,184,156,0.4);
+        }
+
+        /* Attendance dashboard (per-member stats) */
+        .attendance-view { margin-top: 4px; }
+        .attendance-card {
+          padding: 14px 16px;
+          border: 1px solid var(--card-line);
+          border-radius: 12px;
+          margin-bottom: 10px;
+          background: var(--card-bg);
+        }
+        .attendance-card-top {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+          margin-bottom: 8px;
+        }
+        .attendance-name { font-size: 15px; font-weight: 600; color: var(--ink); }
+        .attendance-pct { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; }
+        .attendance-bar-track {
+          height: 6px;
+          border-radius: 999px;
+          background: var(--card-line);
+          overflow: hidden;
+        }
+        .attendance-bar-fill { height: 100%; border-radius: 999px; transition: width .3s ease; }
+        .attendance-card-sub { font-size: 12px; color: var(--ink-dim); margin-top: 8px; }
+        .attendance-missed { font-size: 11.5px; color: var(--ink-faint); margin-top: 4px; }
+
+        /* "Let's Rock" welcome toast */
+        .welcome-toast {
+          position: fixed;
+          top: 18px;
+          left: 50%;
+          transform: translateX(-50%);
+          z-index: 500;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 11px 18px;
+          border-radius: 999px;
+          background: var(--card);
+          border: 1px solid var(--amber-dim);
+          color: var(--ink);
+          font-size: 14px;
+          font-weight: 600;
+          box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+          cursor: pointer;
+          animation: welcomeIn .35s ease, welcomeOut .35s ease 2.35s forwards;
+        }
+        .welcome-toast svg { color: var(--amber); flex-shrink: 0; }
+        @keyframes welcomeIn {
+          from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+          to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+        @keyframes welcomeOut {
+          from { opacity: 1; }
+          to { opacity: 0; }
+        }
+
+        /* Active Sessions / Visit Log modals */
+        .session-list { max-height: 360px; overflow-y: auto; }
+        .session-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 4px;
+          border-bottom: 1px solid var(--card-line);
+        }
+        .session-row:last-child { border-bottom: none; }
+        .session-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: var(--green);
+          box-shadow: 0 0 0 3px rgba(95,184,156,0.18);
+          flex-shrink: 0;
+        }
+        .session-name { font-size: 14px; color: var(--ink); display: flex; align-items: center; gap: 6px; }
+        .session-you {
+          font-size: 9.5px;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          color: var(--amber);
+          border: 1px solid var(--amber-dim);
+          border-radius: 999px;
+          padding: 1px 6px;
+          font-weight: 600;
+        }
+        .session-sub { font-size: 12px; color: var(--ink-dim); margin-top: 2px; }
+        .session-role-tag {
+          font-size: 9.5px;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          color: var(--ink-dim);
+          background: var(--bg-alt);
+          border: 1px solid var(--card-line);
+          border-radius: 999px;
+          padding: 1px 7px;
+        }
+
+        /* Manage Members modal */
+        .member-list { max-height: 360px; overflow-y: auto; }
+        .member-row {
+          padding: 10px 4px;
+          border-bottom: 1px solid var(--card-line);
+        }
+        .member-row:last-child { border-bottom: none; }
+        .member-row-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+        .member-name { font-size: 14px; color: var(--ink); }
+        .member-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+        .member-instrument-cats { margin-top: 7px; gap: 6px; }
+        .member-instrument-tags {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 5px;
+          margin-top: 4px;
+        }
+        .member-instrument-tag {
+          font-size: 10.5px;
+          font-weight: 600;
+          padding: 2px 8px;
+          border-radius: 999px;
+        }
+
+        /* Instrument multi-select dropdown */
+        .instrument-dropdown { position: relative; }
+        .instrument-dropdown-trigger {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 9px 12px;
+          border-radius: 10px;
+          border: 1px solid var(--card-line);
+          background: var(--card);
+          color: var(--ink);
+          font-size: 13px;
+          cursor: pointer;
+          transition: border-color .15s ease;
+        }
+        .instrument-dropdown-trigger:hover, .instrument-dropdown-trigger.open { border-color: var(--amber-dim); }
+        .instrument-dropdown-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .instrument-dropdown-value.placeholder { color: var(--ink-faint); }
+        .instrument-dropdown-chevron {
+          color: var(--ink-faint);
+          font-size: 11px;
+          flex-shrink: 0;
+          transition: transform .15s ease;
+        }
+        .instrument-dropdown-chevron.open { transform: rotate(180deg); }
+        .instrument-dropdown-panel {
+          z-index: 60;
+          background: var(--card);
+          border: 1px solid var(--card-line);
+          border-radius: 10px;
+          box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+          padding: 6px;
+          max-height: 220px;
+          overflow-y: auto;
+        }
+        .instrument-dropdown-option {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 7px 8px;
+          border-radius: 8px;
+          font-size: 13px;
+          color: var(--ink-dim);
+          cursor: pointer;
+        }
+        .instrument-dropdown-option:hover { background: var(--card-line); color: var(--ink); }
+
+        /* Take Attendance modal */
+        .attendance-toggle-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 10px 8px;
+          border-radius: 8px;
+          cursor: pointer;
+          user-select: none;
+        }
+        .attendance-toggle-row:hover { background: var(--card-line); }
+        .attendance-status-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 11px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          padding: 3px 9px;
+          border-radius: 999px;
+          border: 1px solid var(--card-line);
+          color: var(--ink-faint);
+          flex-shrink: 0;
+        }
+        .attendance-status-pill.present {
+          background: rgba(95,184,156,0.14);
+          color: var(--green);
+          border-color: rgba(95,184,156,0.4);
+        }
+        .attendance-status-pill.absent {
+          background: rgba(232,96,76,0.14);
+          color: var(--red);
+          border-color: rgba(232,96,76,0.4);
+        }
+
         /* Song picker inside the Add Event modal */
         .event-song-picker {
           max-height: 220px;
@@ -2028,14 +2843,23 @@ html, body {
         }
       `}</style>
 
-      {!verified ? (
+      {authStatus === "checking" ? (
+        <div className="modal-backdrop">
+          <div className="modal" style={{ textAlign: "center" }}>
+            <Loader2 size={20} className="spin" style={{ color: "var(--ink-dim)" }} />
+            <div style={{ fontSize: "13px", color: "var(--ink-dim)", marginTop: "10px" }}>
+              Checking access…
+            </div>
+          </div>
+        </div>
+      ) : authStatus === "locked" ? (
         <div className="modal-backdrop">
           <form className="modal" onSubmit={handleUnlock} style={{ textAlign: "center" }}>
             <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: "26px", letterSpacing: "0.03em", color: "var(--ink)" }}>
               LUMOS<span style={{ color: "var(--amber)" }}>Practices</span>
             </div>
             <div style={{ fontSize: "13px", color: "var(--ink-dim)", marginTop: "4px", marginBottom: "18px" }}>
-              Band access only — enter the passcode to continue.
+              Band access only — enter your passcode to continue.
             </div>
             <input
               type="password"
@@ -2043,12 +2867,12 @@ html, body {
               className="field"
               value={passcodeInput}
               onChange={(e) => { setPasscodeInput(e.target.value); setPasscodeError(false); }}
-              placeholder="Passcode"
+              placeholder="Your passcode"
               style={{ textAlign: "center", letterSpacing: "0.1em", borderColor: passcodeError ? "var(--red)" : undefined }}
             />
             {passcodeError && (
               <div style={{ color: "var(--red)", fontSize: "12px", marginTop: "8px" }}>
-                That's not the right passcode — try again.
+                That's not a recognized passcode — try again.
               </div>
             )}
             <button type="submit" className="btn-primary" style={{ width: "100%", marginTop: "16px", justifyContent: "center" }}>
@@ -2058,6 +2882,12 @@ html, body {
         </div>
       ) : (
       <div className="wrap">
+        {welcomeName && (
+          <div className="welcome-toast" onClick={() => setWelcomeName(null)}>
+            <Sparkles size={15} strokeWidth={2.2} />
+            Let's Rock, {welcomeName}!
+          </div>
+        )}
         {todayFilter && todayNotes.length > 0 && (
           <div className="today-note-bar">
             <div className="today-note-bar-body">
@@ -2077,6 +2907,7 @@ html, body {
               Practice Queue · {sessions.length} Sessions
               {!loaded && " · Syncing…"}
               {syncError && ` · ${syncError}`}
+              {" · "}{isAdmin ? "Super Admin" : `Logged in as ${currentUser?.name || "member"}`}
             </div>
           </div>
           <div className="topbar-actions">
@@ -2086,6 +2917,31 @@ html, body {
             <button className="btn-add btn-add-ghost" onClick={() => openAddEvent()}>
               <CalendarPlus size={15} strokeWidth={2.5} /> Add Event
             </button>
+            {isAdmin && (
+              <button
+                className="btn-add icon-only"
+                onClick={() => setShowManageMembers(true)}
+                title="Manage band members"
+              >
+                <Users size={15} strokeWidth={2.5} />
+              </button>
+            )}
+            <button
+              className="btn-add icon-only"
+              onClick={() => setShowActiveSessions(true)}
+              title="Who's currently logged in"
+            >
+              <Radio size={15} strokeWidth={2.5} />
+            </button>
+            {isAdmin && (
+              <button
+                className="btn-add icon-only"
+                onClick={() => setShowVisitLog(true)}
+                title="Visit log — login history"
+              >
+                <History size={15} strokeWidth={2.5} />
+              </button>
+            )}
             <button
               className="btn-add icon-only"
               onClick={() => { setApiKeyDraft(youtubeApiKey); setShowApiSettings(true); }}
@@ -2109,6 +2965,9 @@ html, body {
           </div>
           <div className={"view-tab" + (view === "calendar" ? " active" : "")} onClick={() => setView("calendar")}>
             Calendar
+          </div>
+          <div className={"view-tab" + (view === "attendance" ? " active" : "")} onClick={() => setView("attendance")}>
+            Attendance
           </div>
         </div>
 
@@ -2449,6 +3308,9 @@ html, body {
             {upcomingEvents.map((ev) => {
               const isPast = ev.date < todayStr;
               const evSongs = allSongs.filter((s) => ev.songIds.includes(s.id));
+              const attendanceMarks = ev.attendance || {};
+              const presentCount = members.filter((m) => attendanceMarks[m.id] === true).length;
+              const markedCount = members.filter((m) => attendanceMarks[m.id] === true || attendanceMarks[m.id] === false).length;
               return (
                 <div className={"event-row" + (isPast ? " past" : "")} key={ev.id}>
                   <div className="event-date">
@@ -2461,6 +3323,11 @@ html, body {
                     <div className="event-top">
                       <span className={"event-type-badge " + ev.type.toLowerCase()}>{ev.type}</span>
                       <span className="event-title">{ev.title}</span>
+                      {members.length > 0 && markedCount > 0 && (
+                        <span className="attendance-row-badge">
+                          <UserCheck size={11} strokeWidth={2.2} /> {presentCount}/{members.length}
+                        </span>
+                      )}
                     </div>
                     <div className="event-sub">
                       {formatEventDate(ev.date)}
@@ -2489,6 +3356,11 @@ html, body {
                     )}
                   </div>
                   <div className="event-actions">
+                    {isAdmin && (
+                      <span className="edit-btn" onClick={() => openAttendance(ev)} title="Take attendance">
+                        <UserCheck size={13} strokeWidth={2.2} />
+                      </span>
+                    )}
                     <span className="edit-btn" onClick={() => openEditEvent(ev)} title="Edit event">
                       <Pencil size={13} strokeWidth={2.2} />
                     </span>
@@ -2496,6 +3368,70 @@ html, body {
                       <Trash2 size={13} strokeWidth={2.2} />
                     </span>
                   </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {view === "attendance" && (
+          <div className="attendance-view">
+            <div className="section-label-row">
+              <div className="section-label">
+                Practice Attendance · {practiceEvents.length} session{practiceEvents.length !== 1 ? "s" : ""} logged
+              </div>
+              {isAdmin && (
+                <button className="btn-add btn-add-ghost" onClick={() => setShowManageMembers(true)}>
+                  <Users size={15} strokeWidth={2.5} /> Manage Members
+                </button>
+              )}
+            </div>
+            {members.length === 0 && (
+              <div className="empty">
+                {isAdmin ? 'No band members yet. Tap "Manage Members" to add your lineup.' : "No band members yet — ask a super admin to add the lineup."}
+              </div>
+            )}
+            {members.length > 0 && practiceEvents.length === 0 && (
+              <div className="empty">No past practice sessions yet — stats will show up once you've taken attendance a few times.</div>
+            )}
+            {members.length > 0 && practiceEvents.length > 0 && attendanceStats.map((stat) => {
+              const barColor = stat.pct == null ? "var(--card-line)" : stat.pct >= 80 ? "var(--green)" : stat.pct >= 50 ? "var(--amber)" : "var(--red)";
+              return (
+                <div className="attendance-card" key={stat.member.id}>
+                  <div className="attendance-card-top">
+                    <div>
+                      <span className="attendance-name">{stat.member.name}</span>
+                      {(stat.member.instruments || []).length > 0 && (
+                        <div className="member-instrument-tags">
+                          {stat.member.instruments.map((instr) => (
+                            <span
+                              key={instr}
+                              className="member-instrument-tag"
+                              style={{ background: instrumentStyle(instr).bg, color: instrumentStyle(instr).text, border: `1px solid ${instrumentStyle(instr).border}` }}
+                            >
+                              {instr}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <span className="attendance-pct" style={{ color: barColor }}>
+                      {stat.pct == null ? "No data" : `${stat.pct}%`}
+                    </span>
+                  </div>
+                  <div className="attendance-bar-track">
+                    <div className="attendance-bar-fill" style={{ width: `${stat.pct ?? 0}%`, background: barColor }} />
+                  </div>
+                  <div className="attendance-card-sub">
+                    {stat.attended} attended · {stat.missed} missed
+                    {stat.unmarked > 0 ? ` · ${stat.unmarked} unmarked` : ""} of {stat.total} session{stat.total !== 1 ? "s" : ""}
+                  </div>
+                  {stat.missedEvents.length > 0 && (
+                    <div className="attendance-missed">
+                      Missed: {stat.missedEvents.slice(0, 5).map((ev) => formatEventDate(ev.date).replace(/, \d{4}$/, "")).join(", ")}
+                      {stat.missedEvents.length > 5 ? `, +${stat.missedEvents.length - 5} more` : ""}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -3022,6 +3958,239 @@ html, body {
           </form>
         </div>
       )}
+
+      {showManageMembers && isAdmin && (
+        <div className="modal-backdrop" onClick={() => { setShowManageMembers(false); setEditingMemberId(null); setOpenInstrumentDropdown(null); setMemberFormError(null); }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <span>Manage Members</span>
+              <span className="modal-close" onClick={() => { setShowManageMembers(false); setEditingMemberId(null); setOpenInstrumentDropdown(null); setMemberFormError(null); }}><X size={16} /></span>
+            </div>
+            <p className="settings-copy">
+              Each member signs in with their own passcode below and gets everyday access
+              (queue, calendar, attendance stats). Only the super admin passcode can add, edit,
+              or remove members and take attendance.
+            </p>
+            <form className="field-row" onSubmit={addMember} style={{ marginBottom: "6px", alignItems: "flex-start" }}>
+              <input
+                className="field"
+                style={{ flex: 1, minWidth: 0 }}
+                value={newMemberName}
+                onChange={(e) => { setNewMemberName(e.target.value); setMemberFormError(null); }}
+                placeholder="Member name…"
+                autoFocus
+              />
+              <input
+                className="field"
+                style={{ flex: 1, minWidth: 0 }}
+                value={newMemberPasscode}
+                onChange={(e) => { setNewMemberPasscode(e.target.value); setMemberFormError(null); }}
+                placeholder="Their passcode…"
+              />
+              <button type="submit" className="btn-primary" style={{ flexShrink: 0 }}>Add</button>
+            </form>
+            {memberFormError && !editingMemberId && (
+              <div style={{ color: "var(--red)", fontSize: "12px", marginBottom: "10px" }}>{memberFormError}</div>
+            )}
+            <label className="field-label">Instrument(s) for new member</label>
+            <div style={{ marginBottom: "14px" }}>
+              {renderInstrumentDropdown("new", newMemberInstruments, toggleNewMemberInstrument)}
+            </div>
+            <div className="member-list">
+              {members.length === 0 && <div className="event-song-empty">No members yet — add your lineup above.</div>}
+              {members.map((m) => (
+                <div className="member-row" key={m.id}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {editingMemberId === m.id ? (
+                      <>
+                        <div className="member-row-top">
+                          <input
+                            className="field"
+                            style={{ flex: 1, minWidth: 0 }}
+                            value={editingMemberName}
+                            onChange={(e) => { setEditingMemberName(e.target.value); setMemberFormError(null); }}
+                            onKeyDown={(e) => { if (e.key === "Escape") { setEditingMemberId(null); setMemberFormError(null); } }}
+                            placeholder="Name"
+                            autoFocus
+                          />
+                          <input
+                            className="field"
+                            style={{ flex: 1, minWidth: 0 }}
+                            value={editingMemberPasscode}
+                            onChange={(e) => { setEditingMemberPasscode(e.target.value); setMemberFormError(null); }}
+                            onKeyDown={(e) => { if (e.key === "Enter") saveEditMember(); if (e.key === "Escape") { setEditingMemberId(null); setMemberFormError(null); } }}
+                            placeholder="Passcode"
+                          />
+                          <div className="member-row-actions">
+                            <span className="edit-btn" onClick={saveEditMember} title="Save">
+                              <Check size={13} strokeWidth={2.2} />
+                            </span>
+                            <span className="edit-btn" onClick={() => { setEditingMemberId(null); setMemberFormError(null); }} title="Cancel">
+                              <X size={13} strokeWidth={2.2} />
+                            </span>
+                          </div>
+                        </div>
+                        {memberFormError && (
+                          <div style={{ color: "var(--red)", fontSize: "12px", margin: "4px 0" }}>{memberFormError}</div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="member-row-top">
+                        <span className="member-name">{m.name}</span>
+                        <div className="member-row-actions">
+                          <span className="edit-btn" onClick={() => startEditMember(m)} title="Edit name / passcode">
+                            <Pencil size={13} strokeWidth={2.2} />
+                          </span>
+                          <span className="edit-btn" onClick={() => deleteMember(m.id)} title="Remove">
+                            <Trash2 size={13} strokeWidth={2.2} />
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    <div className="member-instrument-cats">
+                      {renderInstrumentDropdown(m.id, m.instruments || [], (instr) => toggleMemberInstrument(m.id, instr))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <div style={{ flex: 1 }} />
+              <button type="button" className="btn-primary" onClick={() => { setShowManageMembers(false); setEditingMemberId(null); setOpenInstrumentDropdown(null); setMemberFormError(null); }}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showActiveSessions && (
+        <div className="modal-backdrop" onClick={() => setShowActiveSessions(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <span>Who's Logged In</span>
+              <span className="modal-close" onClick={() => setShowActiveSessions(false)}><X size={16} /></span>
+            </div>
+            <p className="settings-copy">
+              Everyone currently signed in to LUMOS Practices, across every device. A device drops
+              off this list a few minutes after it stops actively checking in.
+            </p>
+            <div className="session-list">
+              {onlineSessions.length === 0 && (
+                <div className="event-song-empty">No one else appears to be online right now.</div>
+              )}
+              {onlineSessions.map((s) => (
+                <div className="session-row" key={s.deviceId}>
+                  <span className="session-dot" />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="session-name">
+                      {s.name}
+                      {s.deviceId === deviceIdRef.current && <span className="session-you">this device</span>}
+                    </div>
+                    <div className="session-sub">
+                      {s.role === "admin" ? "Super Admin" : "Member"} · {s.device} · active {timeAgoShort(s.lastSeen)}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <div style={{ flex: 1 }} />
+              <button type="button" className="btn-primary" onClick={() => setShowActiveSessions(false)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showVisitLog && isAdmin && (
+        <div className="modal-backdrop" onClick={() => setShowVisitLog(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <span>Visit Log</span>
+              <span className="modal-close" onClick={() => setShowVisitLog(false)}><X size={16} /></span>
+            </div>
+            <p className="settings-copy">
+              Every login on every device, newest first — use this to keep an eye on who's
+              accessing the app and when. This is admin-only; members only see who's online now.
+            </p>
+            <div className="session-list">
+              {visitLog.length === 0 && (
+                <div className="event-song-empty">No logins recorded yet.</div>
+              )}
+              {visitLog.map((v, i) => (
+                <div className="session-row" key={`${v.deviceId}-${v.loginAt}-${i}`}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="session-name">
+                      {v.name}
+                      <span className="session-role-tag">{v.role === "admin" ? "Super Admin" : "Member"}</span>
+                    </div>
+                    <div className="session-sub">{v.device} · {formatVisitTime(v.loginAt)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <div style={{ flex: 1 }} />
+              <button type="button" className="btn-primary" onClick={() => setShowVisitLog(false)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && attendanceEventId != null && attendanceDraft && (() => {
+        const ev = events.find((e) => e.id === attendanceEventId);
+        if (!ev) return null;
+        return (
+          <div className="modal-backdrop" onClick={closeAttendance}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-head">
+                <span>Attendance · {ev.title}</span>
+                <span className="modal-close" onClick={closeAttendance}><X size={16} /></span>
+              </div>
+              <p className="settings-copy">
+                {formatEventDate(ev.date)} — tap a name to cycle Unmarked → Present → Absent.
+              </p>
+              {members.length === 0 && (
+                <div className="event-song-empty">No members yet — add your lineup under "Manage Members" first.</div>
+              )}
+              <div className="member-list">
+                {members.map((m) => {
+                  const status = attendanceDraft[m.id];
+                  const cls = status === true ? "present" : status === false ? "absent" : "unmarked";
+                  const label = status === true ? "Present" : status === false ? "Absent" : "Unmarked";
+                  return (
+                    <div className={"attendance-toggle-row " + cls} key={m.id} onClick={() => cycleAttendance(m.id)}>
+                      <div style={{ minWidth: 0 }}>
+                        <span className="member-name">{m.name}</span>
+                        {(m.instruments || []).length > 0 && (
+                          <div className="member-instrument-tags">
+                            {m.instruments.map((instr) => (
+                              <span
+                                key={instr}
+                                className="member-instrument-tag"
+                                style={{ background: instrumentStyle(instr).bg, color: instrumentStyle(instr).text, border: `1px solid ${instrumentStyle(instr).border}` }}
+                              >
+                                {instr}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <span className={"attendance-status-pill " + cls}>
+                        {status === true && <Check size={11} strokeWidth={3} />}
+                        {status === false && <X size={11} strokeWidth={3} />}
+                        {label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="modal-actions">
+                <button type="button" className="btn-ghost" onClick={closeAttendance}>Cancel</button>
+                <button type="button" className="btn-primary" onClick={saveAttendance}>Save Attendance</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {showApiSettings && (
         <div className="modal-backdrop" onClick={() => setShowApiSettings(false)}>
